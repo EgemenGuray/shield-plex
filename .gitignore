@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+app/src/main/java/app/plexhdr/shield/services/LocalKeys.kt
