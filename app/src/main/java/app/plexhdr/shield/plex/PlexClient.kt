@@ -119,12 +119,12 @@ class PlexClient(context: Context) {
     suspend fun checkPin(pin: Pin): Boolean {
         val r = obj("GET", url("https://plex.tv", "/api/v2/pins/${pin.id}"))
         val t = r.strOrNull("authToken") ?: return false
-        setToken(t)
+        storeToken(t)
         runCatching { account() }
         return true
     }
 
-    private fun setToken(t: String?) {
+    private fun storeToken(t: String?) {
         token = t
         prefs.edit().putString("token", t).apply()
     }
@@ -140,7 +140,7 @@ class PlexClient(context: Context) {
     }
 
     fun signOut() {
-        setToken(null); saveServer(null); saveUser(null)
+        storeToken(null); saveServer(null); saveUser(null)
     }
 
     suspend fun account(): PlexUser {
@@ -171,7 +171,7 @@ class PlexClient(context: Context) {
         val r = obj("POST", url("https://plex.tv", "/api/v2/home/users/${u.uuid}/switch", mapOf("pin" to pin)), token)
         val t = r.strOrNull("authToken") ?: throw PlexException("Plex did not accept the switch")
         val machineId = server?.machineId
-        setToken(t)
+        storeToken(t)
         saveUser(PlexUser(r.strOrNull("title") ?: u.title, r.strOrNull("thumb") ?: u.thumb, r.strOrNull("uuid") ?: u.uuid))
         saveServer(null)
         val servers = listServers()
