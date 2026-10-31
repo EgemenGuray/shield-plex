@@ -1,81 +1,94 @@
-# Shield TV Pro, HDR10+ and a custom Plex client
+# Plex HDR for SHIELD
 
-## Short answer
+A Plex client for the Nvidia Shield TV (Android TV), built for a Samsung QN900B with a Q990C soundbar. It has the same look and features as the [Tizen](https://github.com/EgemenGuray/tizen-plex) and [Apple TV](https://github.com/EgemenGuray/apple-tv-plex) apps, and one main job the others can't do: send **lossless TrueHD Atmos and DTS-HD MA / DTS:X to the soundbar untouched**.
 
-A custom Plex client cannot make the 2019 Shield TV Pro output HDR10+. Parsing the
-HDR10+ metadata in software is easy; the problem is getting it onto the HDMI cable,
-and only Nvidia's firmware can do that. The audio part of the ask (direct play with
-TrueHD Atmos and DTS:X passed through untouched) already works with the official
-Plex app and with Kodi, so a new client would add nothing there.
+It plays the original file (direct play) with Media3/ExoPlayer. Audio the HDMI device accepts goes out as a bitstream; anything else is decoded on the Shield with FFmpeg.
 
-## Why HDR10+ is blocked on the Shield
+## What the hardware allows
 
-HDR10+ needs two things from the player box:
-
-1. Read the per-scene metadata (SMPTE ST 2094-40, carried as SEI messages in HEVC).
-   Any app can do this. Being royalty-free and openly specified helps here.
-2. Send that metadata to the TV every frame inside an HDMI Vendor-Specific InfoFrame
-   (HDR10+ OUI 0x90848B). This is the part that matters, and apps cannot touch it.
-
-On Android, InfoFrames are built by the display hardware composer (HWC) and the
-kernel display driver, both of which are Nvidia's closed vendor code on the Shield.
-The only door Android gives an app is to hand HDR10+ metadata to the video decoder
-(`MediaCodec.PARAMETER_KEY_HDR10_PLUS_INFO`, Android 10+) and hope the vendor stack
-forwards it. Nvidia's stack does not: the Shield's published spec and every firmware
-release up to Shield Experience 9.x list HDR10, HLG and Dolby Vision only, and
-Android never reports HDR10+ as a supported output type on it. Run
-`probe-hdr10plus.sh` to confirm this on your own unit (look for type 4).
-
-Root would not fix it. You would need to unlock the bootloader, rebuild the display
-HAL and kernel driver to emit a new InfoFrame type, and you would lose Widevine L1
-(Netflix, Disney+ in HD/4K) in the process. That is firmware development, not an app.
-
-## What existing players do
-
-| Player | HDR10+ on Shield | Notes |
+| Goal | On the Shield | Why |
 |---|---|---|
-| ExoPlayer / Media3 (used by Plex for Android TV) | No | Only forwards HDR10+ out-of-band for VP9 decoders that advertise the HDR10+ profile (`MediaCodecInfo.isHdr10PlusOutOfBandMetadataSupported`). HEVC HDR10+ is left to the decoder, which on the Shield drops it and outputs HDR10. |
-| Kodi | No | Uses the same MediaCodec surface path; HDR signalling is entirely up to the vendor driver. |
-| mpv / libplacebo | Partly | Can use HDR10+ metadata for its own tone mapping, but mpv-android cannot signal HDR to the TV, so you get SDR. Worse than letting the QN900B tone map HDR10. |
+| **TrueHD / TrueHD Atmos** | **Bitstream** | ExoPlayer passes TrueHD through when the Shield's HDMI output reports it |
+| **DTS, DTS-HD MA, DTS:X** | **Bitstream** | DTS:X travels inside DTS-HD MA |
+| E-AC3 / DD+ Atmos, AC3 | Bitstream | |
+| AAC, FLAC, PCM, Opus… | Decoded to multichannel PCM | |
+| HDR10, HLG | Yes | The Shield switches the TV to HDR automatically |
+| **HDR10+** | **Plays as HDR10** | Nvidia's display driver can't send HDR10+ metadata. No app can change that (see [RESEARCH.md](RESEARCH.md)) |
+| **Dolby Vision** | HDR10 base layer | The QN900B has no Dolby Vision. Profile 7/8 files use the plain HEVC decoder so the TV gets clean HDR10. Profile 5 has no HDR10 layer |
+| **8K** | **Converted to 4K by the server** | The Tegra X1+ decodes up to 4K60. The audio is still copied untouched. Use the Tizen app for 8K on the QN900B |
 
-So on the Shield, HDR10+ files play as HDR10 (static metadata) and the QN900B does
-its own tone mapping. That is the best this hardware can do.
+## Wiring and Shield settings for lossless audio
 
-## Your setup: what to set up instead
+- **Shield → TV → soundbar over eARC**, or Shield → Q990C HDMI in → TV. The second avoids Samsung's eARC quirks with DTS.
+- Shield: *Settings → Display & Sound → Advanced sound settings → Surround sound: **Always*** and enable the formats (Dolby TrueHD, DTS-HD, etc.).
+- Samsung TV: *Sound → Expert Settings → HDMI-eARC Mode: Auto*, *Digital Output Audio Format: Passthrough*.
+- In the app, **Settings → Sound check** shows exactly which formats the Shield reports it can bitstream. If TrueHD isn't listed, the Shield/TV settings above are the fix.
 
-**Plex app on the Shield (recommended, no new client needed)**
-- Plex > Settings > Video: Remote/Local quality "Maximum" / "Original", and turn on
-  "Allow direct play" and "Allow direct stream".
-- Plex > Settings > Audio: Passthrough "HDMI", and enable TrueHD, DTS, DTS-HD (and
-  Dolby Digital+). DTS:X travels inside the DTS-HD MA stream, so DTS-HD passthrough
-  covers it.
-- Shield Settings > Display & Sound > Advanced: Surround sound "Always", and turn on
-  Match content frame rate (and dynamic range if offered).
+## Features
 
-**HDMI wiring for lossless audio**
-- Best: Shield into the Q990C's HDMI input, Q990C into the TV. The soundbar decodes
-  TrueHD/DTS-HD itself and passes video on, and the TV's handling of DTS over eARC
-  no longer matters.
-- Otherwise: Shield into the QN900B, TV to the Q990C over eARC, with the TV's HDMI-eARC
-  mode on Auto and Digital Output Audio Format set to Passthrough. Samsung TVs have a
-  history of dropping DTS over eARC, so test a DTS:X file; if it falls back to PCM or
-  silence, use the soundbar-input wiring above.
+Same as the Tizen app, plus what the Shield adds:
 
-**Dolby Vision note:** the QN900B has no Dolby Vision, so the Shield sends the HDR10
-base layer of DV files. Profile 7/8 files are fine; profile 5 (streaming-sourced, no
-HDR10 base) will show wrong colours on this TV.
+- **Sign-in**: 4-character code at plex.tv/link, or scan a QR code with your phone.
+- **Home**: full-screen top shelf (artwork, title logo, ratings, summary, Play/Resume, More Info; moves on every 9 s; ◀ ▶ past the buttons flips titles), Continue Watching, Recently Added for each library. The background cross-fades to the focused title.
+- **Libraries**: poster grid sorted by **release date** by default; Sort (release date, date added, title, rating, recently watched), Unwatched, Genre, Collections.
+- **Show page**: Play/Resume next episode, Mark watched, season pills, episodes, Cast & Crew, More Like This.
+- **Details**: logo, badges (8K/4K, HDR10+, Dolby Vision, Dolby Atmos, DTS:X, Lossless, CC/SDH), ratings, one line saying exactly what Play will do (bitstream or PCM and why), Resume, Start Over, Trailer, Audio & Subtitles, Version, Mark Watched, Info (full technical sheet). Rows: Chapters, the rest of the season, Cast & Crew, Extras, More Like This.
+- **Ratings with logos** in this order: IMDb, Letterboxd, Tomatometer, RT Audience, Metacritic, Metascore. The Tomatometer and audience logos change with the score.
+- **Cast & Crew** and a person page with everything in your libraries they're credited on.
+- **TMDB artwork** for missing logos, backdrops and posters.
+- **Search** with the Shield keyboard (and voice through the keyboard's mic).
+- **Settings**: Plex Home users (with PIN), server, audio output (passthrough / decode to PCM), sound check, preferred languages, subtitles (mode, language, size, colour, style, position), frame-rate and resolution matching, Dolby Vision handling, 8K handling, autoplay, auto-skip intro/credits, skip lengths, online service keys.
 
-## If HDR10+ itself is the goal
+### Player
+| Remote | Action |
+|---|---|
+| Select | Play / pause. Presses Skip Intro or Up Next when shown |
+| ◀ / ▶ | Back 10 s / forward 30 s. **While paused**: scrub with preview thumbnails (holding speeds up), Select jumps there |
+| ▼ | Panel: **Info**, **Chapters**, **Audio**, **Subtitles**, **Picture** |
+| ▲ | Show the timeline |
+| ⏪ / ⏩ | Previous / next chapter |
+| Back | Close the panel, cancel scrubbing, dismiss Up Next, or stop |
 
-The Shield cannot give it to you. Options that can, each worth testing with a known
-HDR10+ file before committing:
-- The QN900B's own Plex app. The TV decodes HDR10+ natively, but this sends audio over
-  eARC, so the DTS caveat above applies.
-- An Amlogic box running CoreELEC with Kodi and a Plex add-on. CoreELEC supports
-  HDR10+ output and full audio passthrough on recent Amlogic chips (for example the
-  Ugoos AM6B+). Check the CoreELEC forum for your exact model before buying.
+- Timeline with chapter ticks and intro/credits segments, elapsed/remaining, chapter name, "Ends at".
+- **Frame-rate matching**: the TV switches to 23.976/24/25/50/60 Hz for the video (Settings → Match frame rate).
+- **Skip Intro**, **Up Next** with a 10 s countdown (keeps your subtitle language).
+- **Audio** track switching; the panel says which tracks bitstream and which are decoded.
+- **Subtitles**: embedded text and PGS (image) subtitles, external SRT/ASS/VTT, styled from Settings. **Search online…** searches OpenSubtitles (exact-file hash first) and your server. Subtitle delay in 0.1 s steps (external and downloaded files both ways; embedded tracks can only be delayed).
+- **Picture**: original, zoom to fill, stretch. Playback speed when audio is decoded (a bitstream can't change speed).
+- If a file fails to open, the app tries once more, then falls back to decoding the audio on the Shield.
+- Progress goes to Plex, and the Shield also remembers position, version, audio and subtitle per title.
 
-## Files
+## Online services (optional, free)
 
-- `probe-hdr10plus.sh`: run from a computer with adb to see what HDR types and audio
-  encodings your Shield reports with the QN900B and Q990C connected.
+Enter keys in **Settings → Online services**, or in `app/src/main/java/app/plexhdr/shield/services/Keys.kt` before building.
+
+| Key | Get it at | Used for |
+|---|---|---|
+| TMDB | themoviedb.org → Settings → API | Logos, backdrops, posters |
+| OMDb | omdbapi.com → API Key | IMDb, Metascore, Rotten Tomatoes when Plex lacks them |
+| OpenSubtitles | opensubtitles.com → Profile → API consumers | Subtitle search and download |
+
+Letterboxd and the Metacritic user score have no API; the app reads their public pages, so a layout change there just hides that score.
+
+## Install on the Shield
+
+1. Download **PlexHDR-Shield.apk** from the latest successful [Build APK run](../../actions/workflows/build.yml) (Artifacts).
+2. On the Shield: *Settings → Device Preferences → About*, press *Build* 7 times; then *Developer options → Network debugging: On*. Note the IP address.
+3. From a computer with adb:
+   ```bash
+   ./scripts/install.sh <shield-ip> PlexHDR-Shield.apk
+   ```
+   Accept the "Allow network debugging" prompt on the TV the first time. **Plex HDR** appears in the Shield's apps row.
+
+Every CI build is signed with the same key (committed on purpose, `app/plexhdr.keystore`), so a new APK installs over the old one and keeps your settings.
+
+### Build it yourself
+JDK 17 and the Android SDK (platform 36): `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.
+
+## What has and hasn't been checked
+
+Built on GitHub Actions only; **not yet run on a Shield**. Things to check on the device:
+- TrueHD Atmos and DTS-HD MA arrive at the Q990C as a bitstream (the soundbar's display should say Dolby Atmos / DTS:X).
+- Audio and embedded subtitle track mapping between Plex and ExoPlayer.
+- Dolby Vision profile 7/8 files play their HDR10 layer with correct colours.
+- Frame-rate switching, and the 8K → 4K server conversion.
