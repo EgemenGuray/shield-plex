@@ -71,7 +71,7 @@ fun SignInScreen() {
 
     Row(Modifier.fillMaxSize().padding(80.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            T("Plex HDR", size = 44.sp, weight = FontWeight.Bold)
+            T("Lumen", size = 44.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             T("for SHIELD · lossless passthrough", size = 18.sp, color = C.accent)
             Spacer(Modifier.height(40.dp))

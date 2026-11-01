@@ -30,7 +30,7 @@ class Online(context: Context, private val settings: Settings, private val plex:
     private val tmdbBase = "https://api.themoviedb.org/3"
     private val tmdbImages = "https://image.tmdb.org/t/p/"
     private val osBase = "https://api.opensubtitles.com/api/v1"
-    private val appUA = "PlexHDR-Shield v0.1"
+    private val appUA = "Lumen-Shield v0.1"
     private val http: OkHttpClient = plex.http
     private val prefs = context.getSharedPreferences("online", Context.MODE_PRIVATE)
     val subtitleDir = File(context.filesDir, "subtitles").apply { mkdirs() }
