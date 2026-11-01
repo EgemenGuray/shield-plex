@@ -24,7 +24,7 @@ class PlexException(message: String) : IOException(message)
 /** plex.tv PIN / QR sign-in, server discovery, library browsing, playback URLs and progress reporting. */
 class PlexClient(context: Context) {
     companion object {
-        const val PRODUCT = "Plex HDR (Shield)"
+        const val PRODUCT = "Lumen (Shield)"
         const val VERSION = "0.1.0"
 
         /** Builds a URL with sorted query parameters; null values are left out. */
@@ -61,7 +61,7 @@ class PlexClient(context: Context) {
             "X-Plex-Platform" to "Android",
             "X-Plex-Platform-Version" to Build.VERSION.RELEASE,
             "X-Plex-Device" to deviceName,
-            "X-Plex-Device-Name" to "Plex HDR on $deviceName",
+            "X-Plex-Device-Name" to "Lumen on $deviceName",
             "X-Plex-Model" to (Build.MODEL ?: ""),
             "X-Plex-Provides" to "player",
         )

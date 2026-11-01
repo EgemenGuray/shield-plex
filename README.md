@@ -1,4 +1,6 @@
-# Plex HDR for SHIELD
+# Lumen for SHIELD
+
+> Formerly "Plex HDR". The package id is still `app.plexhdr.shield` and the signing key is unchanged, so an installed copy updates in place and keeps its sign-in and settings.
 
 A Plex client for the Nvidia Shield TV (Android TV), built for a Samsung QN900B with a Q990C soundbar. It has the same look and features as the [Tizen](https://github.com/EgemenGuray/tizen-plex) and [Apple TV](https://github.com/EgemenGuray/apple-tv-plex) apps, and one main job the others can't do: send **lossless TrueHD Atmos and DTS-HD MA / DTS:X to the soundbar untouched**.
 
@@ -72,13 +74,13 @@ Letterboxd and the Metacritic user score have no API; the app reads their public
 
 ## Install on the Shield
 
-1. Download **PlexHDR-Shield.apk** from the latest successful [Build APK run](../../actions/workflows/build.yml) (Artifacts).
+1. Download **Lumen-Shield.apk** from the latest successful [Build APK run](../../actions/workflows/build.yml) (Artifacts).
 2. On the Shield: *Settings → Device Preferences → About*, press *Build* 7 times; then *Developer options → Network debugging: On*. Note the IP address.
 3. From a computer with adb:
    ```bash
-   ./scripts/install.sh <shield-ip> PlexHDR-Shield.apk
+   ./scripts/install.sh <shield-ip> Lumen-Shield.apk
    ```
-   Accept the "Allow network debugging" prompt on the TV the first time. **Plex HDR** appears in the Shield's apps row.
+   Accept the "Allow network debugging" prompt on the TV the first time. **Lumen** appears in the Shield's apps row.
 
 Every CI build is signed with the same key (committed on purpose, `app/plexhdr.keystore`), so a new APK installs over the old one and keeps your settings.
 

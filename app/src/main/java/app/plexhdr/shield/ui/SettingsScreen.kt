@@ -183,7 +183,7 @@ fun SettingsScreen(nav: Nav) {
                 "Back" to "Close the panel, or stop",
             )
         })
-        add(Row_.Item("Version", PlexClient.VERSION, "Plex HDR for SHIELD") {})
+        add(Row_.Item("Version", PlexClient.VERSION, "Lumen for SHIELD") {})
     }
 
     val first = remember { FocusRequester() }

@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "PlexHDR-Shield"
+rootProject.name = "Lumen-Shield"
 include(":app")

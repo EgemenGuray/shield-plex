@@ -21,8 +21,8 @@ jobs:
       - name: Build
         run: ./gradlew --no-daemon assembleRelease
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk PlexHDR-Shield.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Lumen-Shield.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: PlexHDR-Shield-apk
-          path: PlexHDR-Shield.apk
+          name: Lumen-Shield-apk
+          path: Lumen-Shield.apk
