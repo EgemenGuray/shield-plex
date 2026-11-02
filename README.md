@@ -60,6 +60,24 @@ Same as the Tizen app, plus what the Shield adds:
 - If a file fails to open, the app tries once more, then falls back to decoding the audio on the Shield.
 - Progress goes to Plex, and the Shield also remembers position, version, audio and subtitle per title.
 
+## Live TV (IPTV)
+
+The **Live TV** tab works with or without Plex. Without a Plex account, choose *Live TV only* on the sign-in screen.
+
+- **Sources:** M3U playlists and Xtream Codes logins. Several can be on at once, and each gets a coloured dot. To avoid typing with the remote, fill in `iptv/IptvKeys.kt` before building.
+- **Sections:** Home, Live TV, TV Guide, Movies, Series, Favorites (Live TV, Movies and Series), Search, Downloads, Recordings and Playlists.
+- **Home:** Continue Watching, recently watched channels, trending channels (your most watched this week), favourite channels, and trending movies and series. Movie and series trends come from TMDB's weekly lists matched to your sources when a TMDB key is set, and are the best-rated new additions otherwise.
+- **Live TV:** groups, channels with what's on now, and a muted preview of the focused channel.
+  - Quality tags (4K, FHD, HD, SD, HDR, 5.1, Stereo, HEVC) come from channel names and are corrected from the real stream once a channel has played. You can filter by them.
+  - Menu, Info or holding Select opens favourite, rename, record, hide group and PIN lock.
+- **TV Guide:** XMLTV (gzip too) and catch-up (default, append, shift, flussonic and Xtream timeshift), plus reminders, recording and downloads.
+- **Player:**
+  - Live controls: ▲▼ or CH± zap, number keys tune, ◀ opens the channel list, and ▶ opens audio, subtitles, record and picture options.
+  - It reconnects on its own when a stream drops or stalls.
+  - Audio passthrough follows the same Settings as Plex playback.
+- **Search:** by channel name or by TV programme, combined with quality tags.
+- **Downloads and Recordings:** saved to the app's Movies folder while Lumen is open. HLS channels are recorded segment by segment.
+
 ## Online services (optional, free)
 
 Enter keys in **Settings → Online services**, or in `app/src/main/java/app/plexhdr/shield/services/Keys.kt` before building.
@@ -88,6 +106,7 @@ Every CI build is signed with the same key (committed on purpose, `app/plexhdr.k
 JDK 17 and the Android SDK (platform 36): `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.
 
 ## What has and hasn't been checked
+- Live TV: the M3U, Xtream Codes, XMLTV and catch-up code passed unit tests on a desktop JVM. The screens, player and recorder were compiled by CI only and haven't been run on a Shield yet.
 
 Built on GitHub Actions only; **not yet run on a Shield**. Things to check on the device:
 - TrueHD Atmos and DTS-HD MA arrive at the Q990C as a bitstream (the soundbar's display should say Dolby Atmos / DTS:X).
