@@ -98,7 +98,7 @@ class Recorder(context: Context, private val store: IptvStore) {
         val url = store.catchupUrl(ch, p) ?: return null
         val now = System.currentTimeMillis()
         return add(Job(UUID.randomUUID().toString(), Kind.Download, p.title, ch.name, ch.logo, url, ch.userAgent,
-            name(ch.name + " " + p.title, "ts"), now, now + (p.end - p.start) + 600_000))
+            name(ch.name + " " + p.title, "ts"), now, now + (p.end - p.start) + 600_000, channelId = ch.id))
     }
 
     fun record(ch: Channel, p: Programme?, minutes: Int = 60): Job {

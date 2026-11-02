@@ -149,6 +149,8 @@ private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean) {
                 val selected = nav.top == screen
                 Pill(label, { nav.tab(screen) }, selected = selected)
             }
+            // Without Plex, its tab leads to signing in.
+            if (iptvOnly) item(key = "plex") { Pill("Plex", { App.settings.iptvOnly = false }) }
         }
         Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
             App.plex.user?.let { T(it.title, size = 15.sp, color = C.dim); Spacer(Modifier.width(18.dp)) }

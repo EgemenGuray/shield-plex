@@ -2,6 +2,7 @@ package app.plexhdr.shield.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -37,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -57,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.plexhdr.shield.App
 import app.plexhdr.shield.iptv.Channel
+import app.plexhdr.shield.iptv.ChannelLogo
 import app.plexhdr.shield.iptv.ChannelPreview
 import app.plexhdr.shield.iptv.Details
 import app.plexhdr.shield.iptv.Episode
@@ -81,7 +85,7 @@ import java.util.Locale
 /* Live TV (IPTV) screens: Home, Live TV with preview, TV Guide, Movies, Series, Favorites, Search, Downloads, Recordings
  * and Playlists. INFO, MENU or a long press on a channel or poster opens its options. */
 
-private enum class Section(val label: String) {
+internal enum class Section(val label: String) {
     Home("Home"), Live("Live TV"), Guide("TV Guide"), Movies("Movies"), Series("Series"), Favorites("Favorites"),
     Search("Search"), Downloads("Downloads"), Recordings("Recordings"), Playlists("Playlists"),
 }
@@ -106,7 +110,45 @@ private object Ui {
     var searchTags by mutableStateOf<Set<QTag>>(emptySet())
     var sheet by mutableStateOf<Sheet?>(null)
     var input by mutableStateOf<IptvInput?>(null)
+    /** Each section's own search text. */
+    val sq = mutableStateMapOf<Section, String>()
 }
+
+/** True when the section isn't being searched, or any of the values contains its search text. */
+private fun hits(sec: Section, vararg values: String?): Boolean {
+    val q = Ui.sq[sec]?.trim()?.lowercase().orEmpty()
+    if (q.isEmpty()) return true
+    return values.any { it != null && it.lowercase().contains(q) }
+}
+private fun searching(sec: Section) = !Ui.sq[sec].isNullOrBlank()
+
+/** The search field at the top of a section. It looks through the whole section, not just the open group. */
+@Composable
+private fun SectionSearch(sec: Section, hint: String) {
+    val q = Ui.sq[sec] ?: ""
+    var f by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BasicTextField(
+            q, { Ui.sq[sec] = it },
+            Modifier.width(330.dp).onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
+                .background(if (q.isNotEmpty()) C.surfaceHi else Color(0x33FFFFFF))
+                .border(2.dp, if (f) C.focus else Color.Transparent, RoundedCornerShape(50))
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            textStyle = TextStyle(color = C.text, fontSize = 16.sp), cursorBrush = SolidColor(C.accent), singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            decorationBox = { inner ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    T("⌕  ", size = 16.sp, color = C.faint)
+                    Box { if (q.isEmpty()) T("Search $hint", size = 15.sp, color = C.faint, maxLines = 1); inner() }
+                }
+            },
+        )
+        if (q.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Pill("✕", { Ui.sq[sec] = "" }) }
+    }
+}
+
+@Composable
+private fun NoMatch(sec: Section) = T("Nothing matches “${Ui.sq[sec]?.trim()}”.", Modifier.padding(D.gutter), color = C.dim)
 
 data class IptvInput(val title: String, val value: String, val number: Boolean = false, val secret: Boolean = false, val done: (String) -> Unit)
 
@@ -225,8 +267,7 @@ private fun ChannelCard(ch: Channel, lineup: List<Channel>, nav: Nav) {
         Focusable({ nav.push(Screen.IptvPlayer(IptvPlay.Live(ch, lineup))) }, Modifier.size(210.dp, 118.dp).onMenu { channelOptions(nav, ch) },
             onLongClick = { channelOptions(nav, ch) }) {
             Box(Modifier.fillMaxSize().background(C.surface), contentAlignment = Alignment.Center) {
-                if (ch.logo != null) Img(ch.logo, Modifier.fillMaxSize().padding(18.dp), ContentScale.Fit)
-                else T(ch.name.take(2).uppercase(), size = 30.sp, weight = FontWeight.Bold, color = C.faint)
+                ChannelLogo(ch, Modifier.fillMaxSize().padding(18.dp), 28.sp)
             }
             if (s.isFavorite(ch.id)) T("★", Modifier.align(Alignment.TopEnd).padding(6.dp), size = 16.sp, color = C.accent)
         }
@@ -391,10 +432,13 @@ private fun ListRow(text: String, sub: String? = null, on: Boolean = false, heig
 @Composable
 private fun LiveSection(nav: Nav) {
     val s = App.iptv
-    val list = lineup(Ui.liveGroup)
+    val list = if (searching(Section.Live)) lineup("all").filter { hits(Section.Live, it.name, it.group, s.nowNext(it).first?.title) } else lineup(Ui.liveGroup)
     var focused by remember { mutableStateOf<Channel?>(null) }
     Column(Modifier.fillMaxSize()) {
-        TagRow(Ui.tagFilter) { Ui.tagFilter = it }
+        Row(Modifier.padding(start = D.gutter), verticalAlignment = Alignment.CenterVertically) {
+            SectionSearch(Section.Live, "channels and what's on")
+            Box(Modifier.weight(1f)) { TagRow(Ui.tagFilter) { Ui.tagFilter = it } }
+        }
         Row(Modifier.fillMaxSize().padding(start = D.gutter, end = D.gutter, top = 8.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             LazyColumn(Modifier.width(250.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF)).padding(6.dp)) {
                 items(listOf("all" to "All Channels", "favorites" to "Favorites", "recents" to "Recently Watched")) { (id, label) ->
@@ -408,14 +452,15 @@ private fun LiveSection(nav: Nav) {
                 }
             }
             LazyColumn(Modifier.weight(1f).fillMaxHeight()) {
-                if (list.isEmpty()) item { T(if (s.isLoading()) "Loading channels…" else "No channels here.", Modifier.padding(16.dp), color = C.dim) }
+                if (searching(Section.Live)) item { Header("${list.size} channels match “${Ui.sq[Section.Live]?.trim()}”") }
+                if (list.isEmpty()) item { T(if (s.isLoading()) "Loading channels…" else if (searching(Section.Live)) "No channel matches." else "No channels here.", Modifier.padding(16.dp), color = C.dim) }
                 items(list, key = { it.id }) { ch ->
                     val nn = s.nowNext(ch)
                     val now = nn.first
                     ListRow(ch.name, now?.title, height = 60.dp,
                         leading = {
                             T(ch.number?.toString() ?: "", Modifier.width(44.dp), size = 13.sp, color = C.faint)
-                            Img(ch.logo, Modifier.size(64.dp, 36.dp), ContentScale.Fit)
+                            ChannelLogo(ch, Modifier.size(64.dp, 36.dp))
                             Spacer(Modifier.width(12.dp))
                         },
                         trailing = {
@@ -435,7 +480,11 @@ private fun LiveSection(nav: Nav) {
                 Spacer(Modifier.height(14.dp))
                 focused?.let { ch ->
                     val (now, next) = s.nowNext(ch)
-                    T(ch.name, size = 20.sp, weight = FontWeight.Bold, maxLines = 1)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ChannelLogo(ch, Modifier.size(84.dp, 47.dp), 16.sp)
+                        Spacer(Modifier.width(14.dp))
+                        T(ch.name, Modifier.weight(1f), size = 20.sp, weight = FontWeight.Bold, maxLines = 2)
+                    }
                     now?.let {
                         Spacer(Modifier.height(6.dp))
                         T(it.title, size = 17.sp, maxLines = 2)
@@ -472,6 +521,10 @@ private fun GuideSection(nav: Nav) {
         "all" -> s.channels
         "favorites" -> s.favoriteChannels()
         else -> s.groups(IptvGroup.Kind.Live).firstOrNull { it.id == Ui.guideGroup }?.let { s.channelsIn(it) } ?: s.channels
+    }.let { all ->
+        if (!searching(Section.Guide)) all
+        // Channels whose name matches, or that show a matching programme within a day of the guide's start.
+        else s.channels.filter { ch -> hits(Section.Guide, ch.name) || s.programmes(ch, start, start + 86_400_000L).any { hits(Section.Guide, it.title, it.episode, it.category) } }
     }
     fun shift(dir: Int) {
         val maxDays = s.channels.mapNotNull { it.catchup?.days }.maxOrNull() ?: 1
@@ -489,6 +542,7 @@ private fun GuideSection(nav: Nav) {
             Pill("◀ Earlier", { shift(-1) })
             Pill("Now", { Ui.guideStart = 0L })
             Pill("Later ▶", { shift(1) })
+            SectionSearch(Section.Guide, "channels and programmes")
             Spacer(Modifier.weight(1f))
             T(day(start), size = 17.sp, color = C.dim)
         }
@@ -501,6 +555,7 @@ private fun GuideSection(nav: Nav) {
             }
             return@Column
         }
+        if (chans.isEmpty() && searching(Section.Guide)) { NoMatch(Section.Guide); return@Column }
         val chW = 220.dp
         val perHour = 300.dp
         Row(Modifier.padding(start = D.gutter + chW, top = 10.dp)) {
@@ -512,7 +567,7 @@ private fun GuideSection(nav: Nav) {
                 items(chans.take(300), key = { it.id }) { ch ->
                     Row(Modifier.height(56.dp).padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.width(chW), verticalAlignment = Alignment.CenterVertically) {
-                            Img(ch.logo, Modifier.size(48.dp, 28.dp), ContentScale.Fit)
+                            ChannelLogo(ch, Modifier.size(48.dp, 28.dp), 11.sp)
                             Spacer(Modifier.width(8.dp))
                             T(ch.name, Modifier.weight(1f), size = 14.sp, maxLines = 1)
                         }
@@ -584,6 +639,8 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
     val gid = if (movies) Ui.movieGroup else Ui.seriesGroup
     fun setGroup(v: String) { if (movies) Ui.movieGroup = v else Ui.seriesGroup = v }
     val sorts = listOf("added" to "Recently Added", "name" to "Name", "rating" to "Rating", "year" to "Year")
+    val sec = if (movies) Section.Movies else Section.Series
+    val find = searching(sec)
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             val name = when (gid) { "all" -> "All"; "favorites" -> "Favorites"; else -> groups.firstOrNull { it.id == gid }?.name ?: "All" }
@@ -594,10 +651,13 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
             Pill("⇅ " + sorts.first { it.first == Ui.sort }.second, {
                 Ui.sheet = Sheet("Sort", sorts.map { (k, l) -> SheetRow(l) { Ui.sort = k } })
             })
+            SectionSearch(sec, if (movies) "movies" else "series")
         }
         Spacer(Modifier.height(6.dp))
         if (movies) {
-            var list = when (gid) { "all" -> s.movies; "favorites" -> s.favoriteMovies(); else -> groups.firstOrNull { it.id == gid }?.let { s.moviesIn(it) } ?: s.movies }
+            var list = if (find) s.movies.filter { hits(sec, it.name, it.group, it.year?.toString()) }
+                else when (gid) { "all" -> s.movies; "favorites" -> s.favoriteMovies(); else -> groups.firstOrNull { it.id == gid }?.let { s.moviesIn(it) } ?: s.movies }
+            if (find && list.isEmpty()) { NoMatch(sec); return@Column }
             list = when (Ui.sort) {
                 "name" -> list.sortedBy { it.name.lowercase() }
                 "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
@@ -606,7 +666,9 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
             }
             Grid(list, { it.id }) { MoviePoster(it, nav) }
         } else {
-            var list = when (gid) { "all" -> s.series; "favorites" -> s.favoriteSeries(); else -> groups.firstOrNull { it.id == gid }?.let { s.seriesIn(it) } ?: s.series }
+            var list = if (find) s.series.filter { hits(sec, it.name, it.group, it.year?.toString()) }
+                else when (gid) { "all" -> s.series; "favorites" -> s.favoriteSeries(); else -> groups.firstOrNull { it.id == gid }?.let { s.seriesIn(it) } ?: s.series }
+            if (find && list.isEmpty()) { NoMatch(sec); return@Column }
             list = when (Ui.sort) {
                 "name" -> list.sortedBy { it.name.lowercase() }
                 "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
@@ -735,23 +797,29 @@ private fun FavoritesSection(nav: Nav) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             listOf("Live TV", "Movies", "Series").forEachIndexed { i, l -> Pill(l, { Ui.favTab = i }, selected = Ui.favTab == i) }
+            SectionSearch(Section.Favorites, "favourites")
         }
         Spacer(Modifier.height(8.dp))
         when (Ui.favTab) {
             0 -> {
-                val chans = s.favoriteChannels()
-                if (chans.isEmpty()) T("No favourite channels yet. Press Menu (or hold Select) on a channel and choose Add to Favorites.", Modifier.padding(D.gutter), color = C.dim)
+                val chans = s.favoriteChannels().filter { hits(Section.Favorites, it.name, it.group, s.nowNext(it).first?.title) }
+                if (chans.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites)
+                else if (chans.isEmpty()) T("No favourite channels yet. Press Menu (or hold Select) on a channel and choose Add to Favorites.", Modifier.padding(D.gutter), color = C.dim)
                 else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = D.gutter, vertical = 8.dp)) {
                     items(chans, key = { it.id }) { ch ->
                         ListRow(ch.name, s.nowNext(ch).first?.title, height = 60.dp,
-                            leading = { Img(ch.logo, Modifier.size(64.dp, 36.dp), ContentScale.Fit); Spacer(Modifier.width(12.dp)) },
+                            leading = { ChannelLogo(ch, Modifier.size(64.dp, 36.dp)); Spacer(Modifier.width(12.dp)) },
                             trailing = { Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) { s.tags(ch).forEach { QualityBadge(it) } } },
                             onOptions = { channelOptions(nav, ch) }) { nav.push(Screen.IptvPlayer(IptvPlay.Live(ch, chans))) }
                     }
                 }
             }
-            1 -> Grid(s.favoriteMovies(), { it.id }) { MoviePoster(it, nav) }
-            else -> Grid(s.favoriteSeries(), { it.id }) { SeriesPoster(it, nav) }
+            1 -> s.favoriteMovies().filter { hits(Section.Favorites, it.name, it.group) }.let { l ->
+                if (l.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites) else Grid(l, { it.id }) { MoviePoster(it, nav) }
+            }
+            else -> s.favoriteSeries().filter { hits(Section.Favorites, it.name, it.group) }.let { l ->
+                if (l.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites) else Grid(l, { it.id }) { SeriesPoster(it, nav) }
+            }
         }
     }
 }
@@ -789,7 +857,7 @@ private fun SearchSection(nav: Nav) {
                             T(if (airing) "Now" else day(p.start), size = 12.sp, color = if (airing) C.bad else C.dim)
                             T(clock(p.start), size = 16.sp, weight = FontWeight.SemiBold)
                         }
-                        Img(ch.logo, Modifier.size(56.dp, 32.dp), ContentScale.Fit); Spacer(Modifier.width(12.dp))
+                        ChannelLogo(ch, Modifier.size(56.dp, 32.dp), 11.sp); Spacer(Modifier.width(12.dp))
                     },
                     trailing = { Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) { s.tags(ch).forEach { QualityBadge(it) } } },
                 ) { programmeSheet(nav, ch, p, r.channels.ifEmpty { listOf(ch) }) }
@@ -808,7 +876,12 @@ private fun SearchSection(nav: Nav) {
 @Composable
 private fun JobsSection(nav: Nav, kind: Recorder.Kind) {
     val rec = App.recorder
-    val list = rec.jobs.filter { it.kind == kind }
+    val s = App.iptv
+    val sec = if (kind == Recorder.Kind.Download) Section.Downloads else Section.Recordings
+    val all = rec.jobs.filter { it.kind == kind }
+    val list = all.filter { hits(sec, it.title, it.subtitle) }
+    if (all.isNotEmpty()) Box(Modifier.padding(start = D.gutter, bottom = 4.dp)) { SectionSearch(sec, if (kind == Recorder.Kind.Download) "downloads" else "recordings") }
+    if (all.isNotEmpty() && list.isEmpty()) { NoMatch(sec); return }
     if (list.isEmpty()) {
         T(if (kind == Recorder.Kind.Download) "No downloads. Download movies and episodes from their pages, or past programmes from the TV Guide."
           else "No recordings. Record a channel from its options or the player, or schedule a programme in the TV Guide.",
@@ -836,7 +909,11 @@ private fun JobsSection(nav: Nav, kind: Recorder.Kind) {
                 Ui.sheet = Sheet(j.title, rows)
             }
             ListRow(j.title, listOfNotNull(j.subtitle, state, size, pct, j.error).joinToString(" · "), height = 64.dp,
-                leading = { Img(j.poster, Modifier.size(64.dp, 40.dp), ContentScale.Fit); Spacer(Modifier.width(12.dp)) },
+                leading = {
+                    val jch = j.channelId?.let { s.channel(it) }
+                    if (jch != null && j.poster == null) ChannelLogo(jch, Modifier.size(64.dp, 40.dp)) else Img(j.poster, Modifier.size(64.dp, 40.dp), ContentScale.Fit)
+                    Spacer(Modifier.width(12.dp))
+                },
                 onOptions = { options() }) {
                 if (j.state == Recorder.State.Done) nav.push(Screen.IptvPlayer(IptvPlay.File(j))) else options()
             }
@@ -849,9 +926,12 @@ private fun JobsSection(nav: Nav, kind: Recorder.Kind) {
 @Composable
 private fun PlaylistsSection(nav: Nav) {
     val s = App.iptv
+    val find = searching(Section.Playlists)
+    fun ok(vararg v: String?) = hits(Section.Playlists, *v)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = D.gutter, vertical = 8.dp)) {
-        item { ListRow("＋ Add Playlist") { nav.push(Screen.IptvPlaylist(null)) } }
-        items(s.playlists, key = { it.id }) { p ->
+        item { Box(Modifier.padding(bottom = 6.dp)) { SectionSearch(Section.Playlists, "playlists and settings") } }
+        if (!find) item { ListRow("＋ Add Playlist") { nav.push(Screen.IptvPlaylist(null)) } }
+        items(s.playlists.filter { ok(it.name, it.url, if (it.kind == Playlist.Kind.Xtream) "Xtream Codes" else "M3U") }, key = { it.id }) { p ->
             val c = s.content(p.id)
             val a = c?.account
             val detail = listOfNotNull(
