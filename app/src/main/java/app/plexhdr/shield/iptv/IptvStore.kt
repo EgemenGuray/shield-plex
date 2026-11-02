@@ -227,16 +227,18 @@ class IptvStore(private val context: Context, private val settings: Settings) {
         val merged = withContext(Dispatchers.IO) {
             val progs = HashMap<String, List<Programme>>()
             val nm = HashMap<String, String>()
+            val icons = HashMap<String, String>()
             var failed: String? = null
             urls.forEach { (u, ua) ->
                 runCatching {
                     val g = XMLTV.parse(get(u, ua), ids, names, from, to)
                     g.programmes.forEach { (k, v) -> progs.putIfAbsent(k, v) }
                     g.names.forEach { (k, v) -> nm.putIfAbsent(k, v) }
+                    g.icons.forEach { (k, v) -> icons.putIfAbsent(k, v) }
                 }.onFailure { failed = it.message }
             }
             if (progs.isEmpty()) { failed?.let { errors["guide"] = "Guide: $it" }; null }
-            else Guide(progs, nm, System.currentTimeMillis()).also {
+            else Guide(progs, nm, System.currentTimeMillis(), icons).also {
                 errors.remove("guide")
                 runCatching { File(dir, "guide.tsv").writeText(it.toTsv()) }
             }
@@ -259,6 +261,15 @@ class IptvStore(private val context: Context, private val settings: Settings) {
                 else -> content(ch.playlistId)?.channels?.firstOrNull { it.id == ch.id }?.let { g.names[Text.key(it.name)] }
             }
         }
+    }
+
+    /** The playlist's logo, else the TV guide's icon for the channel. */
+    fun logo(ch: Channel): String? {
+        ch.logo?.let { return it }
+        val g = guide
+        if (g.icons.isEmpty()) return null
+        ch.epgId?.lowercase()?.let { id -> g.icons[id]?.let { return it } }
+        return g.names[Text.key(ch.name)]?.let { g.icons[it] }
     }
 
     fun programmes(ch: Channel, from: Long? = null, to: Long? = null): List<Programme> {

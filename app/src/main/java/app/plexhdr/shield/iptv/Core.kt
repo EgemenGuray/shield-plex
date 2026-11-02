@@ -129,6 +129,21 @@ enum class QTag(val label: String) {
 }
 
 object Text {
+    /** Short label for a channel without a logo: "Kanal 2 HD" gives K2, "TRT 1" gives TRT 1, "Discovery Science" gives DS. */
+    fun initials(name: String): String {
+        val n = name.replace(Regex("^\\s*[A-Z]{2,4}\\s*[:|\\-]\\s*"), "")
+            .replace(Regex("\\b(4K|UHD|FHD|HD|SD|HEVC|H265|50FPS|60FPS|RAW|BACKUP)\\b", RegexOption.IGNORE_CASE), "").trim()
+        val w = n.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (w.isEmpty()) return ""
+        val num = if (w.size > 1 && w[1].all { it.isDigit() }) w[1] else ""
+        return when {
+            w[0].length <= 4 -> w[0] + if (num.isNotEmpty()) " $num" else ""
+            num.isNotEmpty() -> w[0].take(1) + num
+            w.size > 1 -> w.take(3).joinToString("") { it.take(1) }
+            else -> w[0].take(5)
+        }.uppercase()
+    }
+
     private val strip = listOf(" hd", " fhd", " uhd", " 4k", " sd", " hevc", "(hd)", "[hd]")
 
     /** Name key for matching channels to the guide: lower case, letters and digits only, no quality words. */
@@ -474,11 +489,14 @@ class Guide(
     /** Guide channel id by name key, for channels whose guide id doesn't match. */
     val names: Map<String, String>,
     val updated: Long,
+    /** Channel icon (logo) by guide channel id. */
+    val icons: Map<String, String> = emptyMap(),
 ) {
     fun toTsv(): String {
         val sb = StringBuilder()
         fun c(s: String?) = (s ?: "").replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
         names.forEach { (k, v) -> sb.append("N\t").append(c(k)).append('\t').append(c(v)).append('\n') }
+        icons.forEach { (k, v) -> sb.append("I\t").append(c(k)).append('\t').append(c(v)).append('\n') }
         programmes.forEach { (ch, list) ->
             list.forEach { p ->
                 sb.append("P\t").append(c(ch)).append('\t').append(p.start).append('\t').append(p.end).append('\t').append(c(p.title)).append('\t')
@@ -494,16 +512,18 @@ class Guide(
         fun fromTsv(text: String, updated: Long): Guide {
             val progs = HashMap<String, MutableList<Programme>>()
             val names = HashMap<String, String>()
+            val icons = HashMap<String, String>()
             text.lineSequence().forEach { l ->
                 val f = l.split('\t')
                 if (f[0] == "N" && f.size >= 3) names[f[1]] = f[2]
+                else if (f[0] == "I" && f.size >= 3) icons[f[1]] = f[2]
                 else if (f[0] == "P" && f.size >= 8) {
                     val s = f[2].toLongOrNull() ?: return@forEach
                     val e = f[3].toLongOrNull() ?: return@forEach
                     progs.getOrPut(f[1]) { ArrayList() } += Programme(s, e, f[4], f[5].ifEmpty { null }, f[6].ifEmpty { null }, f[7].ifEmpty { null })
                 }
             }
-            return Guide(progs, names, updated)
+            return Guide(progs, names, updated, icons)
         }
     }
 }
@@ -535,6 +555,7 @@ object XMLTV {
 
     private val chRe = Regex("<channel\\b[^>]*\\bid=\"([^\"]*)\"[^>]*>([\\s\\S]*?)</channel>")
     private val dnRe = Regex("<display-name[^>]*>([\\s\\S]*?)</display-name>")
+    private val iconRe = Regex("<icon\\b[^>]*\\bsrc=\"([^\"]+)\"")
     private val pRe = Regex("<programme\\b([^>]*)>([\\s\\S]*?)</programme>")
     private val cdata = Regex("<!\\[CDATA\\[([\\s\\S]*?)]]>")
     private val tagRes = HashMap<String, Regex>()
@@ -549,6 +570,7 @@ object XMLTV {
         val progs = HashMap<String, MutableList<Programme>>()
         val names = HashMap<String, String>()
         val kept = HashSet<String>()
+        val icons = HashMap<String, String>()
         chRe.findAll(text).forEach { m ->
             val id = decode(m.groupValues[1]).lowercase()
             var keep = id in wantedIds
@@ -557,7 +579,10 @@ object XMLTV {
                 if (k in wantedNames) keep = true
                 names.putIfAbsent(k, id)
             }
-            if (keep) kept += id
+            if (keep) {
+                kept += id
+                iconRe.find(m.groupValues[2])?.let { icons[id] = decode(it.groupValues[1]) }
+            }
         }
         pRe.findAll(text).forEach { m ->
             val a = m.groupValues[1]
@@ -577,7 +602,7 @@ object XMLTV {
             progs.getOrPut(ch) { ArrayList() } += Programme(start, stop, tag(body, "title") ?: "", tag(body, "desc"), tag(body, "category"), sub)
         }
         progs.values.forEach { it.sortBy { p -> p.start } }
-        return Guide(progs, names, System.currentTimeMillis())
+        return Guide(progs, names, System.currentTimeMillis(), icons)
     }
 }
 

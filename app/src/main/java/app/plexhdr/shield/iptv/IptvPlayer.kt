@@ -25,6 +25,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.TextUnit
+import coil3.compose.AsyncImage
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -429,7 +431,7 @@ private fun Osd(pc: IptvPlayerController) {
         if (pc.isLive && ch != null) {
             val (now, next) = store.nowNext(ch)
             Row(verticalAlignment = Alignment.Top) {
-                Img(ch.logo, Modifier.size(120.dp, 68.dp), ContentScale.Fit)
+                ChannelLogo(ch, Modifier.size(120.dp, 68.dp), 22.sp)
                 Spacer(Modifier.width(24.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -488,12 +490,29 @@ private fun PanelBox(title: String, modifier: Modifier, content: @Composable () 
 }
 
 @Composable
-private fun PanelRow(text: String, sub: String? = null, current: Boolean = false, focus: FocusRequester? = null, onClick: () -> Unit) {
+private fun PanelRow(text: String, sub: String? = null, current: Boolean = false, focus: FocusRequester? = null,
+                     leading: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
     Focusable(onClick, Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), 1.02f, focus, showBorder = false) { f ->
-        Column(Modifier.fillMaxWidth().background(if (f) C.focus else Color.Transparent).padding(horizontal = 14.dp, vertical = 9.dp)) {
-            T(text, size = 16.sp, color = if (f) Color.Black else if (current) C.accent else C.text, maxLines = 1)
-            if (sub != null) T(sub, size = 12.sp, color = if (f) Color.DarkGray else C.dim, maxLines = 1)
+        Row(Modifier.fillMaxWidth().background(if (f) C.focus else Color.Transparent).padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            if (leading != null) { leading(); Spacer(Modifier.width(12.dp)) }
+            Column(Modifier.weight(1f)) {
+                T(text, size = 16.sp, color = if (f) Color.Black else if (current) C.accent else C.text, maxLines = 1)
+                if (sub != null) T(sub, size = 12.sp, color = if (f) Color.DarkGray else C.dim, maxLines = 1)
+            }
         }
+    }
+}
+
+/** A channel's logo (from the playlist or the TV guide). Shows the channel's initials until it loads, and if there is none or it fails. */
+@Composable
+fun ChannelLogo(ch: Channel, modifier: Modifier, textSize: TextUnit = 13.sp) {
+    val url = App.iptv.logo(ch)
+    var loaded by remember(url) { mutableStateOf(false) }
+    Box(modifier.clip(RoundedCornerShape(6.dp)).background(if (loaded) Color.Transparent else Color(0x18FFFFFF)), contentAlignment = Alignment.Center) {
+        if (!loaded) T(Text.initials(ch.name), size = textSize, weight = FontWeight.Bold, color = C.faint, maxLines = 1)
+        if (url != null) AsyncImage(model = url, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+            onSuccess = { loaded = true }, onError = { loaded = false })
     }
 }
 
@@ -509,7 +528,8 @@ private fun ChannelPanel(pc: IptvPlayerController, modifier: Modifier) {
         LazyColumn(state = state, verticalArrangement = Arrangement.spacedBy(2.dp)) {
             itemsIndexed(list, key = { _, c -> c.id }) { i, c ->
                 val now = store.nowNext(c).first
-                PanelRow((c.number?.let { "$it  " } ?: "") + c.name, now?.title, c.id == cur?.id, if (i == start) focus else null) {
+                PanelRow((c.number?.let { "$it  " } ?: "") + c.name, now?.title, c.id == cur?.id, if (i == start) focus else null,
+                    leading = { ChannelLogo(c, Modifier.size(56.dp, 32.dp), 11.sp) }) {
                     pc.panel = null; pc.tune(c)
                 }
             }
