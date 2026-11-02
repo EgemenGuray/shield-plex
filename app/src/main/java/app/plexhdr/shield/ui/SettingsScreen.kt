@@ -1,6 +1,8 @@
 package app.plexhdr.shield.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -225,10 +227,10 @@ fun SettingsScreen(nav: Nav) {
 
 @Composable
 private fun InputDialog(inp: Input, close: () -> Unit) {
-    BackHandler(onBack = close)
     var text by remember { mutableStateOf(inp.value) }
     val fr = remember { FocusRequester() }
-    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
+    // A real dialog window, so focus and the D-pad stay inside it instead of moving the page behind.
+    Dialog(close, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.width(720.dp).background(C.surface, RoundedCornerShape(20.dp)).padding(28.dp)) {
             T(inp.title, size = 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))

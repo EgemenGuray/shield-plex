@@ -7,13 +7,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import app.plexhdr.shield.ui.AppRoot
 import app.plexhdr.shield.ui.Intro
+import app.plexhdr.shield.ui.TvScale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { AppRoot() }
+        setContent { TvScale { AppRoot() } }
     }
 
     /** While the startup intro plays, any button skips it and goes no further. */

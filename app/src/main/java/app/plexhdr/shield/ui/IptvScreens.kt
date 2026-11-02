@@ -40,6 +40,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -217,9 +219,9 @@ fun IptvOverlays() {
 private fun InputDialog(inp: IptvInput) {
     var text by remember(inp) { mutableStateOf(inp.value) }
     val focus = remember { FocusRequester() }
-    BackHandler { Ui.input = null }
     fun done() { Ui.input = null; inp.done(text) }
-    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
+    // A real dialog window, so focus and the D-pad stay inside it instead of moving the page behind.
+    Dialog({ Ui.input = null }, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.width(720.dp).clip(RoundedCornerShape(20.dp)).background(C.surface).padding(28.dp)) {
             T(inp.title, size = 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
@@ -680,10 +682,10 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
 private fun <E> Grid(list: List<E>, key: (E) -> Any, content: @Composable (E) -> Unit) {
     if (list.isEmpty()) { Box(Modifier.padding(D.gutter)) { T(if (App.iptv.isLoading()) "Loading…" else "Nothing here.", color = C.dim) }; return }
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(D.posterW + 24.dp),
+        columns = GridCells.FixedSize(D.posterW),
         contentPadding = PaddingValues(horizontal = D.gutter, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(26.dp),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         items(list.size, key = { key(list[it]) }) { content(list[it]) }
     }
