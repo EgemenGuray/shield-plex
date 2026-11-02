@@ -60,6 +60,8 @@ class Settings(context: Context) {
     var eightK by enumPref("eightK", EightK.Auto)
     var tmdbArtwork by pref("tmdbArtwork", true)
     var showRatings by pref("showRatings", true)
+    var introAnimation by pref("introAnimation", true)
+    var introSound by pref("introSound", true)
     /** Use Lumen for Live TV (IPTV) only, without signing in to Plex. */
     var iptvOnly by pref("iptvOnly", false)
 

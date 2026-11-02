@@ -158,6 +158,10 @@ fun SettingsScreen(nav: Nav) {
             val v = listOf(10, 15, 30, 60); dialog = "Skip forward" to v.map { Choice("$it s", null, it == s.skipForward) }; onPick = { i -> s.skipForward = v[i] }
         })
 
+        add(Row_.Header("Startup"))
+        add(Row_.Item("Lumen intro", onOff(s.introAnimation), "The light, the chime and the zoom when the app opens") { s.introAnimation = !s.introAnimation })
+        add(Row_.Item("Intro chime", onOff(s.introSound && s.introAnimation), null) { if (s.introAnimation) s.introSound = !s.introSound })
+
         add(Row_.Header("Online services (free keys)"))
         fun key(label: String, value: String, secret: Boolean, set: (String) -> Unit) =
             add(Row_.Item(label, if (value.isEmpty()) "Not set" else if (secret) "••••••" else value.take(10) + if (value.length > 10) "…" else "", null) {
