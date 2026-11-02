@@ -60,6 +60,8 @@ class Settings(context: Context) {
     var eightK by enumPref("eightK", EightK.Auto)
     var tmdbArtwork by pref("tmdbArtwork", true)
     var showRatings by pref("showRatings", true)
+    /** Use Lumen for Live TV (IPTV) only, without signing in to Plex. */
+    var iptvOnly by pref("iptvOnly", false)
 
     var tmdbKey by pref("tmdbKey", BuildKeys.TMDB)
     var omdbKey by pref("omdbKey", BuildKeys.OMDB)

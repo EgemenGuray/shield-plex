@@ -89,6 +89,8 @@ fun SignInScreen() {
                 Pill("Try again", { attempt++ }, focusRequester = fr)
                 LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
             }
+            Spacer(Modifier.height(10.dp))
+            Pill("Live TV only (IPTV, no Plex)", { App.settings.iptvOnly = true })
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             val qr = remember(strong) { strong?.let { Qr.bitmap(plex.qrUrl(it), 480).asImageBitmap() } }

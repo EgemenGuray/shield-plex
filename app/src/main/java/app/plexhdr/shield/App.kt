@@ -1,6 +1,8 @@
 package app.plexhdr.shield
 
 import android.app.Application
+import app.plexhdr.shield.iptv.IptvStore
+import app.plexhdr.shield.iptv.Recorder
 import app.plexhdr.shield.plex.PlexClient
 import app.plexhdr.shield.services.Online
 import app.plexhdr.shield.services.Settings
@@ -19,6 +21,8 @@ class App : Application(), SingletonImageLoader.Factory {
     lateinit var plex: PlexClient; private set
     lateinit var online: Online; private set
     lateinit var memory: TitleMemory; private set
+    lateinit var iptv: IptvStore; private set
+    lateinit var recorder: Recorder; private set
 
     override fun onCreate() {
         super.onCreate()
@@ -27,6 +31,8 @@ class App : Application(), SingletonImageLoader.Factory {
         plex = PlexClient(this)
         online = Online(this, settings, plex)
         memory = TitleMemory(this, plex)
+        iptv = IptvStore(this, settings).also { it.start() }
+        recorder = Recorder(this, iptv)
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader = ImageLoader.Builder(context)
@@ -42,5 +48,7 @@ class App : Application(), SingletonImageLoader.Factory {
         val plex get() = instance.plex
         val online get() = instance.online
         val memory get() = instance.memory
+        val iptv get() = instance.iptv
+        val recorder get() = instance.recorder
     }
 }
