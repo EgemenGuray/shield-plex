@@ -2,9 +2,11 @@ package app.plexhdr.shield
 
 import android.os.Bundle
 import android.view.Display
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import app.plexhdr.shield.ui.AppRoot
+import app.plexhdr.shield.ui.Intro
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -12,6 +14,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { AppRoot() }
+    }
+
+    /** While the startup intro plays, any button skips it and goes no further. */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (Intro.showing) {
+            if (event.action == KeyEvent.ACTION_DOWN) Intro.skip()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onStop() {

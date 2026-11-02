@@ -60,6 +60,8 @@ class Settings(context: Context) {
     var eightK by enumPref("eightK", EightK.Auto)
     var tmdbArtwork by pref("tmdbArtwork", true)
     var showRatings by pref("showRatings", true)
+    var introAnimation by pref("introAnimation", true)
+    var introSound by pref("introSound", true)
 
     var tmdbKey by pref("tmdbKey", BuildKeys.TMDB)
     var omdbKey by pref("omdbKey", BuildKeys.OMDB)

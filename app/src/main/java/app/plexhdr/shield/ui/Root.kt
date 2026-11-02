@@ -19,6 +19,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,12 +75,15 @@ class Nav {
 @Composable
 fun AppRoot() {
     val plex = App.plex
+    // The startup intro plays once per launch, over the app while it loads (Settings → Startup can turn it off).
+    var intro by rememberSaveable { mutableStateOf(App.settings.introAnimation) }
     Box(Modifier.fillMaxSize().background(C.bg)) {
         when {
             plex.token == null -> SignInScreen()
             plex.server == null -> ServerPicker()
             else -> key(plex.server, plex.user) { Main() }
         }
+        if (intro) IntroScreen(App.settings.introSound) { intro = false }
     }
 }
 
