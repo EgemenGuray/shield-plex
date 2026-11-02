@@ -227,24 +227,6 @@ fun SettingsScreen(nav: Nav) {
 
 @Composable
 private fun InputDialog(inp: Input, close: () -> Unit) {
-    var text by remember { mutableStateOf(inp.value) }
-    val fr = remember { FocusRequester() }
-    // A real dialog window, so focus and the D-pad stay inside it instead of moving the page behind.
-    Dialog(close, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.width(720.dp).background(C.surface, RoundedCornerShape(20.dp)).padding(28.dp)) {
-            T(inp.title, size = 24.sp, weight = FontWeight.Bold)
-            Spacer(Modifier.height(16.dp))
-            Box(Modifier.fillMaxWidth().border(2.dp, C.dim, RoundedCornerShape(10.dp)).padding(14.dp)) {
-                TvTextField(text, { text = it }, Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(color = C.text, fontSize = 20.sp),
-                    keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Text,
-                    secret = inp.secret, startEditing = true, focusRequester = fr, onSubmit = { inp.onDone(text); close() })
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Pill("Save", { inp.onDone(text); close() })
-                Pill("Cancel", close)
-            }
-        }
-    }
+    val url = inp.title.contains("address", true) || inp.title.contains("url", true) || inp.title.contains("server", true) || inp.value.startsWith("http")
+    TextEntryDialog(inp.title, inp.value, { inp.onDone(it); close() }, close, number = inp.number, secret = inp.secret, url = url)
 }

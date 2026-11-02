@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,12 +73,15 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
         heroIndex = (heroIndex + 1) % featured.size
     }
 
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         Crossfade(backdropUrl(bgItem, art), animationSpec = tween(700), label = "home-bg") { Backdrop(it) }
         if (!loaded) { Loading(); return@Box }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = list) {
             if (hero != null) item(key = "hero") {
-                Hero(nav, hero, onFocus = { heroFocused = true },
+                // Back on the hero buttons: show the whole hero again, not a version scrolled under the top bar.
+                Hero(nav, hero, onFocus = { heroFocused = true; scope.launch { list.animateScrollToItem(0) } },
                     prev = { heroIndex = (heroIndex - 1 + featured.size) % featured.size },
                     next = { heroIndex = (heroIndex + 1) % featured.size })
             }
@@ -99,7 +105,7 @@ private fun Hero(nav: Nav, item: PlexItem, onFocus: () -> Unit, prev: () -> Unit
     val play = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
     Column(
-        Modifier.fillMaxWidth().heightIn(min = 640.dp).padding(start = D.gutter, top = 150.dp, end = D.gutter, bottom = 30.dp),
+        Modifier.fillMaxWidth().heightIn(min = 600.dp).padding(start = D.gutter, top = 120.dp, end = D.gutter, bottom = 24.dp),
     ) {
         val logo = logoUrl(item, art)
         if (logo != null) Img(logo, Modifier.height(130.dp).width(460.dp), ContentScale.Fit)

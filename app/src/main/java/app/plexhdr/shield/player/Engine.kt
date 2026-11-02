@@ -14,6 +14,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.FormatHolder
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.audio.AudioCapabilities
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -42,6 +44,8 @@ import okhttp3.OkHttpClient
 @OptIn(UnstableApi::class)
 object Engine {
     @Volatile var stripDolbyVision = false
+    /** The chosen track is DTS-HD MA / HRA / DTS:X and the HDMI device takes DTS-HD: send it whole, not just the core. */
+    @Volatile var dtsHdPassthrough = false
 
     fun build(context: Context, http: OkHttpClient, pcmOnly: Boolean): ExoPlayer {
         val renderers = object : DefaultRenderersFactory(context) {
@@ -52,6 +56,15 @@ object Engine {
                 @Suppress("DEPRECATION")
                 if (pcmOnly) b.setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
                 return b.build()
+            }
+
+            override fun buildAudioRenderers(
+                context: Context, extensionRendererMode: Int, mediaCodecSelector: MediaCodecSelector, enableDecoderFallback: Boolean,
+                audioSink: AudioSink, eventHandler: Handler, eventListener: AudioRendererEventListener, out: ArrayList<Renderer>,
+            ) {
+                super.buildAudioRenderers(context, extensionRendererMode, mediaCodecSelector, enableDecoderFallback, audioSink, eventHandler, eventListener, out)
+                val i = out.indexOfFirst { it is MediaCodecAudioRenderer }
+                if (i >= 0) out[i] = DtsHdAudioRenderer(context, mediaCodecSelector, enableDecoderFallback, eventHandler, eventListener, audioSink)
             }
 
             override fun buildVideoRenderers(
@@ -104,6 +117,28 @@ object Engine {
             val base = if (f.codecs?.startsWith("dvav") == true || f.codecs?.startsWith("dva1") == true) MimeTypes.VIDEO_H264 else MimeTypes.VIDEO_H265
             return f.buildUpon().setSampleMimeType(base).setCodecs(null).build()
         }
+
+        override fun supportsFormat(mediaCodecSelector: MediaCodecSelector, format: Format): Int =
+            super.supportsFormat(mediaCodecSelector, map(format))
+
+        override fun onInputFormatChanged(formatHolder: FormatHolder): androidx.media3.exoplayer.DecoderReuseEvaluation? {
+            formatHolder.format = formatHolder.format?.let { map(it) }
+            return super.onInputFormatChanged(formatHolder)
+        }
+    }
+
+    /**
+     * MKV files label DTS-HD MA tracks plain "A_DTS", so ExoPlayer treats them as DTS core and the soundbar only ever shows
+     * "DTS". When Plex says the track is DTS-HD (and the soundbar takes it), the format is relabelled DTS-HD so the
+     * whole stream, core plus the lossless extension, goes out over HDMI.
+     */
+    private class DtsHdAudioRenderer(
+        context: Context, selector: MediaCodecSelector, fallback: Boolean,
+        handler: Handler, listener: AudioRendererEventListener, sink: AudioSink,
+    ) : MediaCodecAudioRenderer(context, selector, fallback, handler, listener, sink) {
+
+        private fun map(f: Format): Format =
+            if (dtsHdPassthrough && f.sampleMimeType == MimeTypes.AUDIO_DTS) f.buildUpon().setSampleMimeType(MimeTypes.AUDIO_DTS_HD).build() else f
 
         override fun supportsFormat(mediaCodecSelector: MediaCodecSelector, format: Format): Int =
             super.supportsFormat(mediaCodecSelector, map(format))

@@ -1,5 +1,6 @@
 package app.plexhdr.shield.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -73,6 +74,8 @@ fun TvTextField(
         if (moveTo != null) focusManager.moveFocus(moveTo)
     }
 
+    // Back while typing (after the keyboard has closed) stops typing; the next Back leaves the page or dialog.
+    BackHandler(enabled = editing) { finish() }
     LaunchedEffect(editing) {
         if (!editing) return@LaunchedEffect
         delay(30)   // let focusProperties(canFocus = true) apply first

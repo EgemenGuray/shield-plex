@@ -44,9 +44,9 @@ import java.util.UUID
 class PlayerController(
     private val activity: Activity,
     item: PlexItem,
-    mediaIndex: Int?,
-    audioId: Int?,
-    subtitleId: Int?,
+    private val mediaIndex: Int?,
+    private val audioId: Int?,
+    private val subtitleId: Int?,
     private val onClose: () -> Unit,
 ) {
     enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Picture("Picture") }
@@ -111,7 +111,17 @@ class PlayerController(
     // ---- Opening
 
     fun start(startMs: Long?) {
-        open(startMs ?: memory.resumePositionMs(item))
+        scope.launch {
+            // Items from Home rows and hubs come without their streams. Without them there is no audio list,
+            // no bitstream decision (DTS-HD, TrueHD) and no frame rate to match, so fetch the full item first.
+            if (item.media.none { m -> m.part?.streams?.isNotEmpty() == true }) {
+                item.ratingKey?.let { rk -> runCatching { plex.metadata(rk) }.getOrNull() }?.let { full ->
+                    item = full
+                    plan = initialPlan(full, mediaIndex, audioId, subtitleId)
+                }
+            }
+            open(startMs ?: memory.resumePositionMs(item))
+        }
         scope.launch { loadExtras() }
         hideOverlaySoon()
         scope.launch {
@@ -159,6 +169,7 @@ class PlayerController(
     private fun buildPlayer(): ExoPlayer {
         Engine.stripDolbyVision = plan.stripDolbyVision
         val pcm = pcmFallback || settings.audioOutput == Settings.AudioOutput.Pcm
+        Engine.dtsHdPassthrough = !pcm && wantsDtsHd(plan.audio)
         return Engine.build(activity, plex.http, pcm).also { it.addListener(listener) }
     }
 
@@ -195,10 +206,17 @@ class PlayerController(
         loadExternalSubtitle()
     }
 
-    private fun matchDisplay() {
-        val v = plan.video ?: return
-        val fps = v.frameRate?.toFloat() ?: return
-        (activity as? MainActivity)?.matchDisplay(fps, v.width ?: 0, v.height ?: 0, settings.matchFrameRate, settings.matchResolution)
+    private var matchedFps = 0f
+
+    /** [decodedFps] is the rate the decoder reports, used when Plex didn't give one (or gave it as "24p"). */
+    private fun matchDisplay(decodedFps: Float = 0f) {
+        val v = plan.video
+        val fps = v?.frameRate?.toFloat()?.takeIf { it > 1 } ?: decodedFps.takeIf { it > 1 }
+            ?: when (plan.media?.str("videoFrameRate")) { "24p" -> 23.976f; "PAL" -> 25f; "NTSC" -> 29.97f; "60p" -> 59.94f; else -> null }
+            ?: return
+        if (fps == matchedFps) return
+        matchedFps = fps
+        (activity as? MainActivity)?.matchDisplay(fps, v?.width ?: 0, v?.height ?: 0, settings.matchFrameRate, settings.matchResolution)
     }
 
     private suspend fun loadExtras() {
@@ -285,6 +303,9 @@ class PlayerController(
                 if (!g.isTrackSelected(i)) continue
                 val f = g.getTrackFormat(i)
                 when (g.type) {
+                    C.TRACK_TYPE_VIDEO -> if (f.frameRate > 1) matchDisplay(f.frameRate)
+                }
+                when (g.type) {
                     C.TRACK_TYPE_VIDEO -> videoInfo = listOfNotNull(f.sampleMimeType, f.codecs, "${f.width}×${f.height}",
                         if (f.frameRate > 0) String.format("%.3f fps", f.frameRate) else null,
                         f.colorInfo?.let { c -> if (c.colorTransfer == C.COLOR_TRANSFER_ST2084) "PQ (HDR10)" else if (c.colorTransfer == C.COLOR_TRANSFER_HLG) "HLG" else null },
@@ -296,13 +317,19 @@ class PlayerController(
         }
     }
 
+    private fun wantsDtsHd(a: PlexStream?) = a != null && Decide.isDtsHD(a) && "dtshd" in caps.bitstream
+
     fun chooseAudio(s: PlexStream) {
         memory.update(item) { it.audioId = s.id }
         plan.part?.id?.let { pid -> scope.launch { plex.selectStreams(pid, s.id, null) } }
         val before = plan
         plan = Decide.plan(item, plan.mediaIndex, s.id, plan.subtitle?.id ?: -1, settings, caps)
         // A bitstream ↔ PCM change needs a different renderer path; reopen at the same point.
-        if (before.bitstream != plan.bitstream || plan.engine == Decide.Engine.Transcode4K) open(currentPosition()) else selectAudioTrack(s)
+        val pcm = pcmFallback || settings.audioOutput == Settings.AudioOutput.Pcm
+        val dtsHd = !pcm && wantsDtsHd(s)
+        val dtsHdChanged = dtsHd != Engine.dtsHdPassthrough
+        Engine.dtsHdPassthrough = dtsHd
+        if (before.bitstream != plan.bitstream || dtsHdChanged || plan.engine == Decide.Engine.Transcode4K) open(currentPosition()) else selectAudioTrack(s)
     }
 
     fun chooseSubtitle(s: PlexStream?) {

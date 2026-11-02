@@ -217,28 +217,8 @@ fun IptvOverlays() {
 
 @Composable
 private fun InputDialog(inp: IptvInput) {
-    var text by remember(inp) { mutableStateOf(inp.value) }
-    val focus = remember { FocusRequester() }
-    fun done() { Ui.input = null; inp.done(text) }
-    // A real dialog window, so focus and the D-pad stay inside it instead of moving the page behind.
-    Dialog({ Ui.input = null }, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.width(720.dp).clip(RoundedCornerShape(20.dp)).background(C.surface).padding(28.dp)) {
-            T(inp.title, size = 24.sp, weight = FontWeight.Bold)
-            Spacer(Modifier.height(16.dp))
-            TvTextField(
-                text, { text = it },
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.surfaceHi).padding(16.dp),
-                textStyle = TextStyle(color = C.text, fontSize = 20.sp),
-                keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Uri,
-                secret = inp.secret, startEditing = true, focusRequester = focus, onSubmit = { done() },
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Pill("Done", { done() })
-                Pill("Cancel", { Ui.input = null })
-            }
-        }
-    }
+    val url = inp.title.contains("address", true) || inp.title.contains("url", true) || inp.title.contains("server", true) || inp.value.startsWith("http")
+    TextEntryDialog(inp.title, inp.value, { Ui.input = null; inp.done(it) }, { Ui.input = null }, number = inp.number, secret = inp.secret, url = url)
 }
 
 @Composable
