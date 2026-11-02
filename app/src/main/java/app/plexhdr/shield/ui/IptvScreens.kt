@@ -105,10 +105,10 @@ private object Ui {
     var scope by mutableStateOf(SearchScope.All)
     var searchTags by mutableStateOf<Set<QTag>>(emptySet())
     var sheet by mutableStateOf<Sheet?>(null)
-    var input by mutableStateOf<Input?>(null)
+    var input by mutableStateOf<IptvInput?>(null)
 }
 
-data class Input(val title: String, val value: String, val number: Boolean = false, val secret: Boolean = false, val done: (String) -> Unit)
+data class IptvInput(val title: String, val value: String, val number: Boolean = false, val secret: Boolean = false, val done: (String) -> Unit)
 
 private fun clock(t: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(t))
 private fun day(t: Long): String {
@@ -127,7 +127,7 @@ private fun sheet(title: String, vararg rows: SheetRow) { Ui.sheet = Sheet(title
 
 private fun withPin(g: IptvGroup?, then: () -> Unit) {
     val s = App.iptv
-    if (g != null && s.isLocked(g) && !s.unlocked) Ui.input = Input("Enter PIN", "", number = true, secret = true) { if (s.unlock(it)) then() }
+    if (g != null && s.isLocked(g) && !s.unlocked) Ui.input = IptvInput("Enter PIN", "", number = true, secret = true) { if (s.unlock(it)) then() }
     else then()
 }
 
@@ -173,7 +173,7 @@ fun IptvOverlays() {
 }
 
 @Composable
-private fun InputDialog(inp: Input) {
+private fun InputDialog(inp: IptvInput) {
     var text by remember(inp) { mutableStateOf(inp.value) }
     val focus = remember { FocusRequester() }
     BackHandler { Ui.input = null }
@@ -277,7 +277,7 @@ private fun channelOptions(nav: Nav, ch: Channel) {
     val rows = ArrayList<SheetRow>()
     rows += SheetRow("Watch") { nav.push(Screen.IptvPlayer(IptvPlay.Live(ch, listOf(ch)))) }
     rows += SheetRow(if (s.isFavorite(ch.id)) "Remove from Favorites" else "Add to Favorites") { s.toggleFavorite(ch.id) }
-    rows += SheetRow("Rename") { Ui.input = Input("Rename ${ch.name}", ch.name) { s.rename(ch, it) } }
+    rows += SheetRow("Rename") { Ui.input = IptvInput("Rename ${ch.name}", ch.name) { s.rename(ch, it) } }
     val job = rec.recordingOf(ch)
     if (job != null) rows += SheetRow("Stop Recording") { rec.stop(job.id) }
     else {
@@ -882,14 +882,14 @@ private fun PlaylistsSection(nav: Nav) {
         }
         item { ListRow("Refresh Everything") { s.refreshAll() } }
         item { Header("Parental Control") }
-        if (s.pin.isEmpty()) item { ListRow("Set a PIN", "Locked groups ask for it") { Ui.input = Input("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
+        if (s.pin.isEmpty()) item { ListRow("Set a PIN", "Locked groups ask for it") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
         else {
             item {
                 ListRow(if (s.unlocked) "Lock Locked Groups Again" else "Unlock Locked Groups") {
-                    if (s.unlocked) s.lock() else Ui.input = Input("Enter PIN", "", number = true, secret = true) { s.unlock(it) }
+                    if (s.unlocked) s.lock() else Ui.input = IptvInput("Enter PIN", "", number = true, secret = true) { s.unlock(it) }
                 }
             }
-            item { ListRow("Change PIN") { Ui.input = Input("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
+            item { ListRow("Change PIN") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
         }
         val hidden = (s.groups(IptvGroup.Kind.Live, true) + s.groups(IptvGroup.Kind.Movie, true) + s.groups(IptvGroup.Kind.Series, true)).filter { it.id in s.hidden }
         if (hidden.isNotEmpty()) {
@@ -921,7 +921,7 @@ fun IptvPlaylistScreen(nav: Nav, existing: Playlist?) {
     val s = App.iptv
     var p by remember { mutableStateOf(existing ?: Playlist("", "", Playlist.Kind.Xtream, "")) }
     val first = remember { FocusRequester() }
-    fun field(title: String, value: String, secret: Boolean = false, set: (String) -> Unit) { Ui.input = Input(title, value, secret = secret, done = set) }
+    fun field(title: String, value: String, secret: Boolean = false, set: (String) -> Unit) { Ui.input = IptvInput(title, value, secret = secret, done = set) }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = D.gutter, end = D.gutter, top = 60.dp, bottom = 60.dp)) {
             item { T(if (existing == null) "Add Playlist" else "Edit Playlist", Modifier.padding(bottom = 16.dp), size = 32.sp, weight = FontWeight.Bold) }
