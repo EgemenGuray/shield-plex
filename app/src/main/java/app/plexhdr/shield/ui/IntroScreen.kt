@@ -38,7 +38,8 @@ import kotlin.math.sin
 
 /**
  * Startup intro: in the dark the light in the corner of the L ignites, the Lumen chime strikes, the light spills along
- * the L, then the camera flies into the light and the app fades in. 3.6 s; any remote button skips it.
+ * the L, then the camera zooms straight into the middle of the L (no pan) and the app opens behind it. 3.6 s; any
+ * remote button skips it.
  * Same timeline as the Apple app (IntroView.swift) and Tizen (app/js/intro.js); the chime file is shared.
  */
 object IntroTimeline {
@@ -50,7 +51,7 @@ object IntroTimeline {
 
     class State(
         val ignite: Float, val flare: Float, val radius: Float, val glow: Float,
-        val zoom: Float, val pan: Float, val wash: Float, val fade: Float,
+        val zoom: Float, val fade: Float,
     )
 
     private fun clamp(x: Float) = x.coerceIn(0f, 1f)
@@ -69,9 +70,7 @@ object IntroTimeline {
             flare = flare,
             radius = 3 + 61 * spill,
             glow = min(1f, ignite * (0.85f + 0.55f * flare) + breathe),
-            zoom = exp(ln(70f) * easeIn(z)),
-            pan = easeOut(z * 1.4f),
-            wash = 0.5f * smooth(0.45f, 1f, z),
+            zoom = exp(ln(14f) * easeIn(z)),   // straight into the middle of the L
             fade = 1 - smooth(FADE0, DURATION, t),
         )
     }
@@ -153,13 +152,11 @@ private fun DrawScope.drawIntro(t: Float) {
     drawRect(Color.Black)
     val unit = min(w, h) * 0.0058f
     val light = Offset(33f, 79f)       // light source: the corner of the L
-    val focus = Offset(38f, 74f)       // zoom target: brightest point on the bend
-    val restX = w / 2 + (focus.x - 59.5f) * unit
-    val restY = h / 2 + (focus.y - 47.5f) * unit
+    val middle = Offset(59.5f, 47.5f)  // middle of the L (centre of its bounds), kept at the screen centre
     withTransform({
-        translate(restX + (w / 2 - restX) * s.pan, restY + (h / 2 - restY) * s.pan)
+        translate(w / 2, h / 2)
         scale(unit * s.zoom, unit * s.zoom, pivot = Offset.Zero)
-        translate(-focus.x, -focus.y)
+        translate(-middle.x, -middle.y)
     }) {
         if (s.glow > 0.001f) {
             drawCircle(
@@ -199,5 +196,4 @@ private fun DrawScope.drawIntro(t: Float) {
             )
         }
     }
-    if (s.wash > 0.001f) drawRect(rgb(255, 228, 190, s.wash))
 }

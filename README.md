@@ -30,7 +30,7 @@ It plays the original file (direct play) with Media3/ExoPlayer. Audio the HDMI d
 
 Same as the Tizen app, plus what the Shield adds:
 
-- **Startup intro** (3.6 s, once per launch): in the dark the light in the corner of the L ignites, the Lumen chime plays, then the camera flies into the light and Home fades in. Any remote button skips it; Settings → Startup turns the intro or just the chime off. The chime (`res/raw/lumen_chime.ogg`) is an original synthesized sound.
+- **Startup intro** (3.6 s, once per launch): in the dark the light in the corner of the L ignites, the Lumen chime plays, then the camera zooms straight into the middle of the L and Home opens behind it. Any remote button skips it; Settings → Startup turns the intro or just the chime off. The chime (`res/raw/lumen_chime.ogg`) is an original synthesized sound.
 - **Sign-in**: 4-character code at plex.tv/link, or scan a QR code with your phone.
 - **Home**: full-screen top shelf (artwork, title logo, ratings, summary, Play/Resume, More Info; moves on every 9 s; ◀ ▶ past the buttons flips titles), Continue Watching, Recently Added for each library. The background cross-fades to the focused title.
 - **Libraries**: poster grid sorted by **release date** by default; Sort (release date, date added, title, rating, recently watched), Unwatched, Genre, Collections.
