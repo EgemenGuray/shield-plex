@@ -36,7 +36,6 @@ fun SearchScreen(nav: Nav) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<PlexItem>?>(emptyList()) }
     val field = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
     LaunchedEffect(query) {
         if (query.length < 2) { results = emptyList(); return@LaunchedEffect }
         delay(350)
@@ -47,9 +46,9 @@ fun SearchScreen(nav: Nav) {
         Box(Modifier.padding(horizontal = D.gutter).fillMaxWidth(0.6f).border(2.dp, C.dim, RoundedCornerShape(12.dp))
             .background(C.surface, RoundedCornerShape(12.dp)).padding(16.dp)) {
             if (query.isEmpty()) T("Movies, shows, episodes, collections", size = 20.sp, color = C.faint)
-            BasicTextField(query, { query = it }, Modifier.fillMaxWidth().focusRequester(field),
-                textStyle = TextStyle(color = C.text, fontSize = 20.sp), singleLine = true, cursorBrush = SolidColor(C.accent),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search))
+            TvTextField(query, { query = it }, Modifier.fillMaxWidth(),
+                textStyle = TextStyle(color = C.text, fontSize = 20.sp), imeAction = ImeAction.Search,
+                startEditing = true, focusRequester = field)
         }
         val r = results
         when {
