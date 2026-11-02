@@ -228,17 +228,15 @@ private fun InputDialog(inp: Input, close: () -> Unit) {
     BackHandler(onBack = close)
     var text by remember { mutableStateOf(inp.value) }
     val fr = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
     Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
         Column(Modifier.width(720.dp).background(C.surface, RoundedCornerShape(20.dp)).padding(28.dp)) {
             T(inp.title, size = 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
             Box(Modifier.fillMaxWidth().border(2.dp, C.dim, RoundedCornerShape(10.dp)).padding(14.dp)) {
-                BasicTextField(text, { text = it }, Modifier.fillMaxWidth().focusRequester(fr),
-                    textStyle = TextStyle(color = C.text, fontSize = 20.sp), singleLine = true, cursorBrush = SolidColor(C.accent),
-                    visualTransformation = if (inp.secret) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Text, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { inp.onDone(text); close() }))
+                TvTextField(text, { text = it }, Modifier.fillMaxWidth(),
+                    textStyle = TextStyle(color = C.text, fontSize = 20.sp),
+                    keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Text,
+                    secret = inp.secret, startEditing = true, focusRequester = fr, onSubmit = { inp.onDone(text); close() })
             }
             Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

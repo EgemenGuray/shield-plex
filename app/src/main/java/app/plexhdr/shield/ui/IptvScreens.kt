@@ -128,14 +128,13 @@ private fun SectionSearch(sec: Section, hint: String) {
     val q = Ui.sq[sec] ?: ""
     var f by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        BasicTextField(
+        TvTextField(
             q, { Ui.sq[sec] = it },
-            Modifier.width(330.dp).onFocusChanged { f = it.isFocused }.clip(RoundedCornerShape(50))
+            Modifier.width(330.dp).clip(RoundedCornerShape(50))
                 .background(if (q.isNotEmpty()) C.surfaceHi else Color(0x33FFFFFF))
                 .border(2.dp, if (f) C.focus else Color.Transparent, RoundedCornerShape(50))
                 .padding(horizontal = 20.dp, vertical = 10.dp),
-            textStyle = TextStyle(color = C.text, fontSize = 16.sp), cursorBrush = SolidColor(C.accent), singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            textStyle = TextStyle(color = C.text, fontSize = 16.sp), imeAction = ImeAction.Search, onFocus = { f = it },
             decorationBox = { inner ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     T("⌕  ", size = 16.sp, color = C.faint)
@@ -224,14 +223,12 @@ private fun InputDialog(inp: IptvInput) {
         Column(Modifier.width(720.dp).clip(RoundedCornerShape(20.dp)).background(C.surface).padding(28.dp)) {
             T(inp.title, size = 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
-            BasicTextField(
+            TvTextField(
                 text, { text = it },
-                Modifier.fillMaxWidth().focusRequester(focus).clip(RoundedCornerShape(10.dp)).background(C.surfaceHi).padding(16.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.surfaceHi).padding(16.dp),
                 textStyle = TextStyle(color = C.text, fontSize = 20.sp),
-                cursorBrush = SolidColor(C.accent), singleLine = true,
-                visualTransformation = if (inp.secret) PasswordVisualTransformation() else VisualTransformation.None,
-                keyboardOptions = KeyboardOptions(keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Uri, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { done() }),
+                keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Uri,
+                secret = inp.secret, startEditing = true, focusRequester = focus, onSubmit = { done() },
             )
             Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -240,7 +237,6 @@ private fun InputDialog(inp: IptvInput) {
             }
         }
     }
-    LaunchedEffect(Unit) { delay(50); runCatching { focus.requestFocus() } }
 }
 
 @Composable
@@ -835,11 +831,12 @@ private fun SearchSection(nav: Nav) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 60.dp)) {
         item {
             Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                BasicTextField(
+                var sf by remember { mutableStateOf(false) }
+                TvTextField(
                     Ui.query, { Ui.query = it },
-                    Modifier.width(460.dp).clip(RoundedCornerShape(50)).background(C.surfaceHi).padding(horizontal = 22.dp, vertical = 12.dp),
-                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), cursorBrush = SolidColor(C.accent), singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    Modifier.width(460.dp).clip(RoundedCornerShape(50)).background(C.surfaceHi)
+                        .border(2.dp, if (sf) C.focus else Color.Transparent, RoundedCornerShape(50)).padding(horizontal = 22.dp, vertical = 12.dp),
+                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), imeAction = ImeAction.Search, onFocus = { sf = it },
                     decorationBox = { inner -> if (Ui.query.isEmpty()) T("Search channels, programmes, movies, series", size = 16.sp, color = C.faint); inner() },
                 )
                 SearchScope.entries.forEach { sc -> Pill(sc.label, { Ui.scope = sc }, selected = Ui.scope == sc) }
