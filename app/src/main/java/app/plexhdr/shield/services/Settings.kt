@@ -62,6 +62,8 @@ class Settings(context: Context) {
     var showRatings by pref("showRatings", true)
     var introAnimation by pref("introAnimation", true)
     var introSound by pref("introSound", true)
+    /** Use Lumen for Live TV (IPTV) only, without signing in to Plex. */
+    var iptvOnly by pref("iptvOnly", false)
 
     var tmdbKey by pref("tmdbKey", BuildKeys.TMDB)
     var omdbKey by pref("omdbKey", BuildKeys.OMDB)

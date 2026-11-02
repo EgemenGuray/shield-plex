@@ -29,6 +29,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.plexhdr.shield.App
+import app.plexhdr.shield.iptv.IptvPlay
+import app.plexhdr.shield.iptv.IptvPlayerScreen
+import app.plexhdr.shield.iptv.Movie
+import app.plexhdr.shield.iptv.Playlist
+import app.plexhdr.shield.iptv.Series
 import app.plexhdr.shield.player.PlayerScreen
 import app.plexhdr.shield.plex.PlexItem
 import app.plexhdr.shield.plex.PlexPerson
@@ -47,6 +52,11 @@ sealed interface Screen {
     data class Collection(val item: PlexItem) : Screen
     data object Search : Screen
     data object Settings : Screen
+    data object Iptv : Screen
+    data class IptvMovie(val movie: Movie) : Screen
+    data class IptvSeries(val series: Series) : Screen
+    data class IptvPlaylist(val playlist: Playlist?) : Screen
+    data class IptvPlayer(val play: IptvPlay) : Screen
     data class Player(
         val item: PlexItem, val startMs: Long? = null, val mediaIndex: Int? = null,
         val audioId: Int? = null, val subtitleId: Int? = null,
@@ -54,8 +64,8 @@ sealed interface Screen {
 }
 
 /** A simple back stack. The first entry is the current tab. */
-class Nav {
-    val stack = mutableStateListOf<Screen>(Screen.Home)
+class Nav(first: Screen = Screen.Home) {
+    val stack = mutableStateListOf<Screen>(first)
     val top: Screen get() = stack.last()
     fun push(s: Screen) { stack.add(s) }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
@@ -79,6 +89,7 @@ fun AppRoot() {
     var intro by rememberSaveable { mutableStateOf(App.settings.introAnimation) }
     Box(Modifier.fillMaxSize().background(C.bg)) {
         when {
+            plex.token == null && App.settings.iptvOnly -> Main(iptvOnly = true)
             plex.token == null -> SignInScreen()
             plex.server == null -> ServerPicker()
             else -> key(plex.server, plex.user) { Main() }
@@ -88,13 +99,14 @@ fun AppRoot() {
 }
 
 @Composable
-private fun Main() {
-    val nav = remember { Nav() }
+private fun Main(iptvOnly: Boolean = false) {
+    val home = if (iptvOnly) Screen.Iptv else Screen.Home
+    val nav = remember { Nav(home) }
     var sections by remember { mutableStateOf<List<PlexSection>>(emptyList()) }
-    LaunchedEffect(Unit) { sections = runCatching { App.plex.sections().filter { it.isVideo } }.getOrDefault(emptyList()) }
+    LaunchedEffect(Unit) { if (!iptvOnly) sections = runCatching { App.plex.sections().filter { it.isVideo } }.getOrDefault(emptyList()) }
 
-    BackHandler(enabled = nav.stack.size > 1 || nav.top != Screen.Home) {
-        if (nav.stack.size > 1) nav.pop() else nav.tab(Screen.Home)
+    BackHandler(enabled = nav.stack.size > 1 || nav.top != home) {
+        if (nav.stack.size > 1) nav.pop() else nav.tab(home)
     }
 
     val top = nav.top
@@ -112,18 +124,25 @@ private fun Main() {
                 Screen.Search -> SearchScreen(nav)
                 Screen.Settings -> SettingsScreen(nav)
                 is Screen.Player -> PlayerScreen(top.item, top.startMs, top.mediaIndex, top.audioId, top.subtitleId) { nav.pop() }
+                Screen.Iptv -> IptvHome(nav)
+                is Screen.IptvMovie -> IptvMovieScreen(nav, top.movie)
+                is Screen.IptvSeries -> IptvSeriesScreen(nav, top.series)
+                is Screen.IptvPlaylist -> IptvPlaylistScreen(nav, top.playlist)
+                is Screen.IptvPlayer -> IptvPlayerScreen(top.play) { nav.pop() }
             }
         }
-        if (isTab) TabBar(nav, sections)
+        if (isTab) TabBar(nav, sections, iptvOnly)
+        if (top !is Screen.Player && top !is Screen.IptvPlayer) IptvReminder(nav)
     }
 }
 
 @Composable
-private fun TabBar(nav: Nav, sections: List<PlexSection>) {
+private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean) {
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) { while (true) { now = Date(); delay(15_000) } }
-    val tabs: List<Pair<String, Screen>> = listOf("Home" to Screen.Home) +
-        sections.map { it.title to Screen.Library(it) } + listOf("Search" to Screen.Search, "Settings" to Screen.Settings)
+    val tabs: List<Pair<String, Screen>> = if (iptvOnly) listOf("Live TV" to Screen.Iptv, "Settings" to Screen.Settings)
+        else listOf("Home" to Screen.Home, "Live TV" to Screen.Iptv) +
+            sections.map { it.title to Screen.Library(it) } + listOf("Search" to Screen.Search, "Settings" to Screen.Settings)
     Box(
         Modifier.fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
