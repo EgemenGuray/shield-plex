@@ -882,14 +882,14 @@ private fun PlaylistsSection(nav: Nav) {
         }
         item { ListRow("Refresh Everything") { s.refreshAll() } }
         item { Header("Parental Control") }
-        if (s.pin.isEmpty()) item { ListRow("Set a PIN", "Locked groups ask for it") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
+        if (s.pin.isEmpty()) item { ListRow("Set a PIN", "Locked groups ask for it") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.savePin(it) } } }
         else {
             item {
                 ListRow(if (s.unlocked) "Lock Locked Groups Again" else "Unlock Locked Groups") {
                     if (s.unlocked) s.lock() else Ui.input = IptvInput("Enter PIN", "", number = true, secret = true) { s.unlock(it) }
                 }
             }
-            item { ListRow("Change PIN") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.setPin(it) } } }
+            item { ListRow("Change PIN") { Ui.input = IptvInput("New PIN", "", number = true, secret = true) { s.savePin(it) } } }
         }
         val hidden = (s.groups(IptvGroup.Kind.Live, true) + s.groups(IptvGroup.Kind.Movie, true) + s.groups(IptvGroup.Kind.Series, true)).filter { it.id in s.hidden }
         if (hidden.isNotEmpty()) {

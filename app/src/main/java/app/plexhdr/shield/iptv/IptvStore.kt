@@ -323,7 +323,7 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     fun isLocked(g: IptvGroup) = g.id in locked
     fun setHidden(g: IptvGroup, on: Boolean) { hidden = if (on) hidden + g.id else hidden - g.id; writeSet("hidden", hidden); rebuild() }
     fun setLocked(g: IptvGroup, on: Boolean) { locked = if (on) locked + g.id else locked - g.id; writeSet("locked", locked); rebuild() }
-    fun setPin(p: String) { pin = p; prefs.edit().putString("pin", p).apply() }
+    fun savePin(p: String) { pin = p; prefs.edit().putString("pin", p).apply() }
     fun unlock(p: String): Boolean { if (p != pin) return false; unlocked = true; rebuild(); return true }
     fun lock() { unlocked = false; rebuild() }
 
