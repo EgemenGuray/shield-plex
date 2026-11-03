@@ -148,6 +148,7 @@ class PlexStream(o: JSONObject) : J(o) {
     val displayTitle get() = str("displayTitle") ?: codec.uppercase()
     val extendedDisplayTitle get() = str("extendedDisplayTitle") ?: displayTitle
     val profile get() = str("profile")
+    val languageTag get() = str("languageTag")
     val bitrate get() = int("bitrate")
     val bitDepth get() = int("bitDepth")
     val frameRate get() = dbl("frameRate")

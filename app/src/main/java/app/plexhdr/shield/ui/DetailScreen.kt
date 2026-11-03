@@ -148,16 +148,20 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
                 val choices = ArrayList<Choice>()
                 val actions = ArrayList<() -> Unit>()
                 choices += Choice("Audio", header = true); actions += {}
-                part?.audioStreams?.forEach { s ->
-                    choices += Choice(s.extendedDisplayTitle, Decide.bitstreamKey(s)?.let { k ->
+                val audios = part?.audioStreams ?: emptyList()
+                val audioNames = Decide.trackLabels(audios)
+                audios.forEachIndexed { n, s ->
+                    choices += Choice(audioNames[n], Decide.bitstreamKey(s)?.let { k ->
                         if (k in caps.bitstream || (k == "eac3joc" && "eac3" in caps.bitstream)) "Bitstream to the soundbar" else "Decoded to PCM on the Shield"
                     }, s.id == plan.audio?.id)
                     actions += { audioId = s.id; App.memory.update(item) { it.audioId = s.id } }
                 }
                 choices += Choice("Subtitles", header = true); actions += {}
                 choices += Choice("Off", selected = plan.subtitle == null); actions += { subtitleId = -1; App.memory.update(item) { it.subtitleId = -1 } }
-                part?.subtitleStreams?.forEach { s ->
-                    choices += Choice(s.extendedDisplayTitle, if (s.isExternal) "External file" else "Embedded", s.id == plan.subtitle?.id)
+                val subs = part?.subtitleStreams ?: emptyList()
+                val subNames = Decide.trackLabels(subs)
+                subs.forEachIndexed { n, s ->
+                    choices += Choice(subNames[n], if (s.isExternal) "External file" else "Embedded", s.id == plan.subtitle?.id)
                     actions += { subtitleId = s.id; App.memory.update(item) { it.subtitleId = s.id; it.onlineSubtitle = null } }
                 }
                 ChoiceDialog("Audio & Subtitles", choices, { i -> actions[i](); dialog = null }, { dialog = null })

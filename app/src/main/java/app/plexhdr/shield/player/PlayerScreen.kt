@@ -128,6 +128,7 @@ fun PlayerScreen(item: PlexItem, startMs: Long?, mediaIndex: Int?, audioId: Int?
                     Key.MediaFastForward, Key.MediaNext -> { pc.jumpChapter(1); true }
                     Key.MediaRewind, Key.MediaPrevious -> { pc.jumpChapter(-1); true }
                     Key.Menu, Key.Info -> { pc.panel = PlayerController.Panel.Info; true }
+                    Key.Back, Key.Escape -> false   // straight to the back handler; showing the controls first cost an extra press
                     else -> { pc.showOverlay(autoHide = true); false }
                 }
             }
@@ -300,8 +301,10 @@ private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier:
     Column(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF2000000), Color(0xF2000000))))
         .padding(start = 60.dp, end = 60.dp, top = 40.dp, bottom = 36.dp)) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(PlayerController.Panel.values().size) { i ->
-                val p = PlayerController.Panel.values()[i]
+            // Version only when the title has more than one file.
+            val tabs = PlayerController.Panel.values().filter { it != PlayerController.Panel.Version || pc.item.media.size > 1 }
+            items(tabs.size) { i ->
+                val p = tabs[i]
                 Pill(p.title, { pc.panel = p }, selected = p == panel, onFocused = { pc.panel = p }, focusRequester = if (p == panel) first else null)
             }
         }
@@ -320,13 +323,20 @@ private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier:
                 }
                 PlayerController.Panel.Audio -> {
                     val streams = pc.plan.part?.audioStreams ?: emptyList()
-                    OptionList(streams.map { a ->
-                        Choice(a.extendedDisplayTitle, Decide.bitstreamKey(a)?.let { k ->
+                    val names = Decide.trackLabels(streams)
+                    OptionList(streams.mapIndexed { n, a ->
+                        Choice(names[n], Decide.bitstreamKey(a)?.let { k ->
                             if (App.settings.audioOutput == Settings.AudioOutput.Passthrough && (k in pc.caps.bitstream || (k == "eac3joc" && "eac3" in pc.caps.bitstream))) "Bitstream" else "Decoded to PCM"
                         }, a.id == pc.plan.audio?.id)
                     }) { i -> pc.chooseAudio(streams[i]) }
                 }
                 PlayerController.Panel.Subtitles -> SubtitlesTab(pc)
+                PlayerController.Panel.Version -> {
+                    val media = pc.item.media
+                    OptionList(media.mapIndexed { i, m -> Choice(m.label, m.part?.file?.substringAfterLast('/'), i == pc.plan.mediaIndex) }) { i ->
+                        if (i != pc.plan.mediaIndex) { pc.panel = null; pc.chooseVersion(i) }
+                    }
+                }
                 PlayerController.Panel.Picture -> {
                     val fits = PlayerController.Fit.values()
                     val speeds = listOf(0.75f, 1f, 1.25f, 1.5f)
@@ -376,7 +386,7 @@ private fun SubtitlesTab(pc: PlayerController) {
     val subs = pc.plan.part?.subtitleStreams ?: emptyList()
     Column {
         val base = listOf(Choice("Off", null, pc.plan.subtitle == null && pc.onlineSubtitle == null)) +
-            subs.map { Choice(it.extendedDisplayTitle, if (it.isExternal) "External" else if (Decide.isImageSub(it)) "Embedded image (PGS)" else "Embedded", it.id == pc.plan.subtitle?.id) } +
+            Decide.trackLabels(subs).let { names -> subs.mapIndexed { n, it -> Choice(names[n], if (it.isExternal) "External" else if (Decide.isImageSub(it)) "Embedded image (PGS)" else "Embedded", it.id == pc.plan.subtitle?.id) } } +
             (pc.onlineSubtitle?.let { listOf(Choice("Downloaded subtitle", it, true)) } ?: emptyList()) +
             listOf(Choice("Search online…", "OpenSubtitles (file hash first) and your server", false),
                 Choice("Delay −0.1 s", "Now ${pc.subtitleDelayMs / 1000.0} s", false), Choice("Delay +0.1 s", "Embedded tracks: only positive delays", false))

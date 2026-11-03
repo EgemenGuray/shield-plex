@@ -49,7 +49,7 @@ class PlayerController(
     private val subtitleId: Int?,
     private val onClose: () -> Unit,
 ) {
-    enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Picture("Picture") }
+    enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Version("Version"), Picture("Picture") }
     enum class Fit(val label: String) { Fit("Original"), Zoom("Zoom to fill"), Stretch("Stretch") }
 
     private val settings: Settings = App.settings
