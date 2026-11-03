@@ -173,7 +173,34 @@ class PlayerController(
         return Engine.build(activity, plex.http, pcm).also { it.addListener(listener) }
     }
 
+    private var openJob: Job? = null
+
+    /**
+     * Opens the file at [startMs]. If the TV has to change refresh rate first, wait for that to finish: the HDMI link
+     * (and with it the soundbar's list of formats) drops for a moment during the switch, and an AudioTrack opened
+     * then dies and comes back as PCM. That is why DTS-HD reached the soundbar as multichannel PCM.
+     */
     private fun open(startMs: Long) {
+        openJob?.cancel()
+        openJob = scope.launch {
+            if (matchDisplay()) {
+                player?.let { it.removeListener(listener); it.release() }
+                player = null
+                buffering = true
+                awaitHdmi()
+            }
+            openNow(startMs)
+        }
+    }
+
+    private suspend fun awaitHdmi() {
+        val main = activity as? MainActivity ?: return
+        val until = System.currentTimeMillis() + 6000
+        while (!main.displaySettled() && System.currentTimeMillis() < until) delay(100)
+        delay(2500)   // the soundbar re-announces its formats a moment after the picture comes back
+    }
+
+    private fun openNow(startMs: Long) {
         error = null
         appliedTracks = false
         embeddedCues = emptyList()
@@ -193,7 +220,6 @@ class PlayerController(
             url = part?.let { plex.directPlayUrl(it) }
         }
         if (url == null) { error = "This item has no playable file."; return }
-        matchDisplay()
         val old = player
         old?.removeListener(listener)
         old?.release()
@@ -208,15 +234,15 @@ class PlayerController(
 
     private var matchedFps = 0f
 
-    /** [decodedFps] is the rate the decoder reports, used when Plex didn't give one (or gave it as "24p"). */
-    private fun matchDisplay(decodedFps: Float = 0f) {
+    /** [decodedFps] is the rate the decoder reports, used when Plex didn't give one (or gave it as "24p"). True if the mode changes. */
+    private fun matchDisplay(decodedFps: Float = 0f): Boolean {
         val v = plan.video
         val fps = v?.frameRate?.toFloat()?.takeIf { it > 1 } ?: decodedFps.takeIf { it > 1 }
             ?: when (plan.media?.str("videoFrameRate")) { "24p" -> 23.976f; "PAL" -> 25f; "NTSC" -> 29.97f; "60p" -> 59.94f; else -> null }
-            ?: return
-        if (fps == matchedFps) return
+            ?: return false
+        if (fps == matchedFps) return false
         matchedFps = fps
-        (activity as? MainActivity)?.matchDisplay(fps, v?.width ?: 0, v?.height ?: 0, settings.matchFrameRate, settings.matchResolution)
+        return (activity as? MainActivity)?.matchDisplay(fps, v?.width ?: 0, v?.height ?: 0, settings.matchFrameRate, settings.matchResolution) == true
     }
 
     private suspend fun loadExtras() {
@@ -233,7 +259,9 @@ class PlayerController(
         val pos = currentPosition()
         if (!retried) {
             retried = true
-            open(pos)
+            // Often an HDMI hiccup (TV or soundbar renegotiating): give the link a moment before trying again.
+            openJob?.cancel()
+            openJob = scope.launch { buffering = true; delay(2500); openNow(pos) }
             return
         }
         if (!pcmFallback && plan.bitstream && settings.audioOutput == Settings.AudioOutput.Passthrough) {
@@ -303,7 +331,12 @@ class PlayerController(
                 if (!g.isTrackSelected(i)) continue
                 val f = g.getTrackFormat(i)
                 when (g.type) {
-                    C.TRACK_TYPE_VIDEO -> if (f.frameRate > 1) matchDisplay(f.frameRate)
+                    // Plex had no frame rate: switch now, then reopen once the HDMI link is back so the audio survives.
+                    C.TRACK_TYPE_VIDEO -> if (f.frameRate > 1 && matchDisplay(f.frameRate)) {
+                        val pos = currentPosition()
+                        openJob?.cancel()
+                        openJob = scope.launch { player?.pause(); awaitHdmi(); openNow(pos) }
+                    }
                 }
                 when (g.type) {
                     C.TRACK_TYPE_VIDEO -> videoInfo = listOfNotNull(f.sampleMimeType, f.codecs, "${f.width}×${f.height}",

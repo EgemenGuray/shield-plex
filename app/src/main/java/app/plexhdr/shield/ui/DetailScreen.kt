@@ -103,7 +103,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
                         if (resumeMs > 0) item { Pill("Start Over", { nav.play(item, 0L, version, audioId, subtitleId) }) }
                         val trailer = item.extras.firstOrNull { it.subtype == "trailer" } ?: item.extras.firstOrNull()
                         if (trailer != null) item { Pill("Trailer", { nav.play(trailer, 0L) }) }
-                        item { Pill("Audio & Subtitles", { dialog = "tracks" }) }
+                        if (loaded) item { Pill("Audio & Subtitles", { dialog = "tracks" }) }
                         if (item.media.size > 1) item { Pill("Version", { dialog = "version" }) }
                         item {
                             Pill(if (item.isWatched) "Mark Unwatched" else "Mark Watched", {

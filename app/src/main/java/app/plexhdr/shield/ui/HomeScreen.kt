@@ -64,7 +64,11 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
     var focusedItem by remember { mutableStateOf<PlexItem?>(null) }
     var heroFocused by remember { mutableStateOf(true) }
     val hero = featured.getOrNull(heroIndex)
-    val bgItem = if (heroFocused) hero else focusedItem ?: hero
+    val wanted = if (heroFocused) hero else focusedItem ?: hero
+    // Change the full-screen backdrop only once focus rests, not on every card passed while scrolling a row:
+    // loading a 4K backdrop per key press made the UI stutter.
+    var bgItem by remember { mutableStateOf(wanted) }
+    LaunchedEffect(wanted) { delay(350); bgItem = wanted }
     val art by rememberArtwork(bgItem)
 
     LaunchedEffect(featured.size, heroIndex, heroFocused) {

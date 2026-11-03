@@ -23,6 +23,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -148,10 +150,14 @@ private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean) {
             .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
             .padding(horizontal = D.gutter, vertical = 18.dp),
     ) {
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.align(Alignment.CenterStart)) {
+        // Coming up into the bar lands on the current tab, not on whichever tab was focused last.
+        val current = remember { FocusRequester() }
+        var inBar by remember { mutableStateOf(false) }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.align(Alignment.CenterStart)
+            .onFocusChanged { if (it.hasFocus && !inBar) runCatching { current.requestFocus() }; inBar = it.hasFocus }) {
             items(tabs, key = { it.first + it.second.hashCode() }) { (label, screen) ->
                 val selected = nav.top == screen
-                Pill(label, { nav.tab(screen) }, selected = selected)
+                Pill(label, { nav.tab(screen) }, selected = selected, focusRequester = if (selected) current else null)
             }
             // Without Plex, its tab leads to signing in.
             if (iptvOnly) item(key = "plex") { Pill("Plex", { App.settings.iptvOnly = false }) }

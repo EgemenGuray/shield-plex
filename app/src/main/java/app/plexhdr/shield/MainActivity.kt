@@ -35,9 +35,9 @@ class MainActivity : ComponentActivity() {
      * Switches the HDMI output to the video's frame rate (and optionally resolution), like the Shield's own "Match content
      * frame rate" does for apps that ask. 23.976 fps plays at 23.976 Hz, 25 at 50 Hz if there's no 25 Hz mode, and so on.
      */
-    fun matchDisplay(fps: Float, width: Int, height: Int, matchRate: Boolean, matchResolution: Boolean) {
-        if (!matchRate && !matchResolution) return
-        val display: Display = window.decorView.display ?: return
+    fun matchDisplay(fps: Float, width: Int, height: Int, matchRate: Boolean, matchResolution: Boolean): Boolean {
+        if (!matchRate && !matchResolution) return false
+        val display: Display = window.decorView.display ?: return false
         val current = display.mode
         val modes = display.supportedModes.toList()
         val sizeOk = { m: Display.Mode ->
@@ -59,9 +59,16 @@ class MainActivity : ComponentActivity() {
             }.minByOrNull { it.refreshRate } ?: sameSize.minByOrNull { abs(it.refreshRate - current.refreshRate) }
         } else {
             sameSize.minByOrNull { abs(it.refreshRate - current.refreshRate) }
-        } ?: return
-        if (chosen.modeId == current.modeId) return
+        } ?: return false
+        if (chosen.modeId == current.modeId) return false
         window.attributes = window.attributes.also { it.preferredDisplayModeId = chosen.modeId }
+        return true
+    }
+
+    /** True once the HDMI output runs at the mode asked for in [matchDisplay] (or nothing was asked). */
+    fun displaySettled(): Boolean {
+        val want = window.attributes.preferredDisplayModeId
+        return want == 0 || window.decorView.display?.mode?.modeId == want
     }
 
     fun restoreDisplay() {
