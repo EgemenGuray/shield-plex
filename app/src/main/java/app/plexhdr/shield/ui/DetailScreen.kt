@@ -59,7 +59,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val caps = remember { Engine.caps(ctx, view.display) }
 
     LaunchedEffect(initial.id, refresh) {
-        initial.ratingKey?.let { rk -> runCatching { plex.metadata(rk) }.getOrNull()?.let { item = it } }
+        initial.ratingKey?.let { rk -> plex.fullItem(rk)?.let { item = it } }
         loaded = true
         if (item.type == "episode") item.parentRatingKey?.let { season = runCatching { plex.children(it) }.getOrDefault(emptyList()) }
         else similar = item.ratingKey?.let { plex.similar(it) } ?: emptyList()

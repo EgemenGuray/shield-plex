@@ -114,8 +114,11 @@ class PlayerController(
         scope.launch {
             // Items from Home rows and hubs come without their streams. Without them there is no audio list,
             // no bitstream decision (DTS-HD, TrueHD) and no frame rate to match, so fetch the full item first.
-            if (item.media.none { m -> m.part?.streams?.isNotEmpty() == true }) {
-                item.ratingKey?.let { rk -> runCatching { plex.metadata(rk) }.getOrNull() }?.let { full ->
+            // Always: Home rows, hubs and Continue Watching don't carry streams, and an old copy may be stale.
+            run {
+                item.ratingKey?.let { rk -> plex.fullItem(rk) }?.takeIf { full ->
+                    full.media.any { it.part?.streams?.isNotEmpty() == true } || item.media.none { it.part?.streams?.isNotEmpty() == true }
+                }?.let { full ->
                     item = full
                     plan = initialPlan(full, mediaIndex, audioId, subtitleId)
                 }
@@ -301,7 +304,9 @@ class PlayerController(
 
     private fun selectAudioTrack(s: PlexStream) {
         val exo = player ?: return
-        val g = findGroup(C.TRACK_TYPE_AUDIO, s, plan.part?.audioStreams ?: emptyList()) ?: return
+        val g = findGroup(C.TRACK_TYPE_AUDIO, s, plan.part?.audioStreams ?: emptyList())
+        android.util.Log.i("Lumen", "selectAudioTrack ${s.id} index=${s.index} -> group ${g?.mediaTrackGroup?.getFormat(0)?.let { "${it.id} ${it.sampleMimeType}" }}")
+        if (g == null) return
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
             .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, 0))
             .build()
@@ -353,6 +358,7 @@ class PlayerController(
     private fun wantsDtsHd(a: PlexStream?) = a != null && Decide.isDtsHD(a) && "dtshd" in caps.bitstream
 
     fun chooseAudio(s: PlexStream) {
+        android.util.Log.i("Lumen", "chooseAudio ${s.id} ${s.extendedDisplayTitle}; part streams=${plan.part?.streams?.size}")
         memory.update(item) { it.audioId = s.id }
         plan.part?.id?.let { pid -> scope.launch { plex.selectStreams(pid, s.id, null) } }
         val before = plan
@@ -591,7 +597,7 @@ class PlayerController(
         saveProgress()
         val subLang = plan.subtitle?.languageCode
         scope.launch {
-            val full = next.ratingKey?.let { runCatching { plex.metadata(it) }.getOrNull() } ?: next
+            val full = next.ratingKey?.let { plex.fullItem(it) } ?: next
             item = full
             upNext = null
             upNextDismissed = false

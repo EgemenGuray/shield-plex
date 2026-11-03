@@ -258,6 +258,26 @@ class PlexClient(context: Context) {
         api("/library/metadata/$ratingKey", mapOf("includeChapters" to 1, "includeMarkers" to 1, "includeExtras" to 1, "includeOnDeck" to 1, "includeGuids" to 1))
     ).firstOrNull()
 
+    /**
+     * The item with its files and streams (audio, subtitles), which the details page and the player need.
+     * Tries twice, and once more without the extra sections, because a server that is waking up or busy
+     * sometimes answers without the streams; the Shield also starts up before Wi-Fi is back.
+     */
+    suspend fun fullItem(ratingKey: String): PlexItem? {
+        var last: PlexItem? = null
+        repeat(3) { attempt ->
+            val got = runCatching {
+                if (attempt < 2) metadata(ratingKey) else items(api("/library/metadata/$ratingKey")).firstOrNull()
+            }.getOrNull()
+            val streams = got?.media?.sumOf { it.part?.streams?.size ?: 0 } ?: -1
+            android.util.Log.i("Lumen", "fullItem $ratingKey attempt $attempt: media=${got?.media?.size} streams=$streams")
+            if (got != null) last = got
+            if (streams > 0) return got
+            kotlinx.coroutines.delay(700L * (attempt + 1))
+        }
+        return last
+    }
+
     suspend fun children(ratingKey: String) = items(api("/library/metadata/$ratingKey/children"))
     suspend fun similar(ratingKey: String) = runCatching { items(api("/library/metadata/$ratingKey/similar", mapOf("count" to 20))) }.getOrDefault(emptyList())
 
