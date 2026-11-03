@@ -88,7 +88,7 @@ fun TextEntryDialog(
             } else {
                 val rows = when (mode) { 1 -> upper; 2 -> symbols; else -> lower }
                 rows.forEachIndexed { r, row -> KeyRow(row.map { it.toString() }, 52.dp, if (r == 0) firstKey else null) { type(it) } }
-                if (url) KeyRow(urlSnippets, null) { type(it) }
+                if (url) KeyRow(urlSnippets, null, null) { type(it) }
             }
             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!number) {
