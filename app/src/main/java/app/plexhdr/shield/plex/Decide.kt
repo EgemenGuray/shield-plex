@@ -277,7 +277,7 @@ object Decide {
             ).distinct()
             val tried = if (extra.isEmpty()) base[i] else "${base[i]} · ${extra.joinToString(" · ")}"
             if (list.indices.count { j -> j != i && base[j] == base[i] } > 0 && extra.isEmpty())
-                "${base[i]} · track ${(s.index ?: i) + 1}"
+                "${base[i]} ${(0..i).count { j -> base[j] == base[i] }}"   // "Español SRT 1", "Español SRT 2"
             else tried
         }
     }

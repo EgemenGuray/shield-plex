@@ -298,7 +298,15 @@ private fun UpNextCard(pc: PlayerController, next: PlexItem, modifier: Modifier)
 private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier: Modifier) {
     val first = remember(panel) { FocusRequester() }
     LaunchedEffect(panel) { runCatching { first.requestFocus() } }
-    Column(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF2000000), Color(0xF2000000))))
+    Column(modifier.fillMaxWidth()
+        // Back closes the panel and the controls in one press. Without this, Compose spent the first Back moving
+        // focus out of the tab row and the second on the controls, so leaving the player took three.
+        .onPreviewKeyEvent { e ->
+            if (e.key != Key.Back && e.key != Key.Escape) return@onPreviewKeyEvent false
+            if (e.type == KeyEventType.KeyUp) { pc.panel = null; pc.overlayVisible = false }
+            true
+        }
+        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF2000000), Color(0xF2000000))))
         .padding(start = 60.dp, end = 60.dp, top = 40.dp, bottom = 36.dp)) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             // Version only when the title has more than one file.
