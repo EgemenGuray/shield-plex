@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -47,7 +48,9 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val ctx = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
-    var item by remember { mutableStateOf(initial) }
+    // Referential: PlexItem.equals only compares id and progress, so the full copy (with streams) fetched below
+    // would otherwise count as "unchanged" and the page kept showing the stream-less copy from the row.
+    var item by remember { mutableStateOf(initial, referentialEqualityPolicy()) }
     var loaded by remember { mutableStateOf(false) }
     var season by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
     var similar by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
@@ -65,7 +68,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
         else similar = item.ratingKey?.let { plex.similar(it) } ?: emptyList()
     }
 
-    val plan = remember(item, version, audioId, subtitleId, settings.audioOutput, settings.dolbyVision) {
+    val plan = remember(System.identityHashCode(item), version, audioId, subtitleId, settings.audioOutput, settings.dolbyVision) {
         Decide.plan(item, version, audioId, subtitleId, settings, caps)
     }
     val art by rememberArtwork(if (item.type == "episode") null else item)

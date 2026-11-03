@@ -58,7 +58,7 @@ class PlayerController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
 
-    var item by mutableStateOf(item); private set
+    var item by mutableStateOf(item, androidx.compose.runtime.referentialEqualityPolicy()); private set   // see DetailScreen
     var caps by mutableStateOf(Engine.caps(activity, activity.window.decorView.display)); private set
     var onlineSubtitle by mutableStateOf<String?>(null); private set
     var plan by mutableStateOf(initialPlan(item, mediaIndex, audioId, subtitleId)); private set
@@ -359,6 +359,7 @@ class PlayerController(
 
     fun chooseAudio(s: PlexStream) {
         android.util.Log.i("Lumen", "chooseAudio ${s.id} ${s.extendedDisplayTitle}; part streams=${plan.part?.streams?.size}")
+        if (s.id == plan.audio?.id && player != null) { panel = null; return }   // already playing this one
         memory.update(item) { it.audioId = s.id }
         plan.part?.id?.let { pid -> scope.launch { plex.selectStreams(pid, s.id, null) } }
         val before = plan
