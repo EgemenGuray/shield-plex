@@ -47,7 +47,7 @@ fun SearchScreen(nav: Nav) {
             .background(C.surface, RoundedCornerShape(12.dp)).padding(16.dp)) {
             if (query.isEmpty()) T("Movies, shows, episodes, collections", size = 20.sp, color = C.faint)
             TvTextField(query, { query = it }, Modifier.fillMaxWidth(),
-                textStyle = TextStyle(color = C.text, fontSize = 20.sp), imeAction = ImeAction.Search,
+                textStyle = TextStyle(color = C.text, fontSize = 20.sp), imeAction = ImeAction.Search, title = "Search",
                 startEditing = true, focusRequester = field)
         }
         val r = results

@@ -60,8 +60,18 @@ fun TvTextField(
     onFocus: (Boolean) -> Unit = {},
     onSubmit: () -> Unit = {},
     decorationBox: @Composable (inner: @Composable () -> Unit) -> Unit = { it() },
+    /** OK opens Lumen's QWERTY grid (D-pad keys, like the Tizen and Apple TV apps); false = the system keyboard. */
+    onScreenKeyboard: Boolean = true,
+    title: String = "",
 ) {
-    var editing by remember { mutableStateOf(startEditing) }
+    var grid by remember { mutableStateOf(onScreenKeyboard && startEditing) }
+    if (grid) {
+        TextEntryDialog(title, value, { onValueChange(it); grid = false; runCatching { focusRequester.requestFocus() }; onSubmit() },
+            { grid = false; runCatching { focusRequester.requestFocus() } },
+            number = keyboardType == KeyboardType.NumberPassword || keyboardType == KeyboardType.Number,
+            secret = secret, url = keyboardType == KeyboardType.Uri, onChange = onValueChange)
+    }
+    var editing by remember { mutableStateOf(startEditing && !onScreenKeyboard) }
     val field = remember { FocusRequester() }
     var fieldFocused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -91,7 +101,7 @@ fun TvTextField(
             .onPreviewKeyEvent { e ->
                 val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
                 when {
-                    !editing && ok -> { if (e.type == KeyEventType.KeyUp) editing = true; true }
+                    !editing && ok -> { if (e.type == KeyEventType.KeyUp) { if (onScreenKeyboard) grid = true else editing = true }; true }
                     editing && e.type == KeyEventType.KeyDown && (e.key == Key.DirectionUp || e.key == Key.DirectionDown) -> {
                         finish(if (e.key == Key.DirectionUp) FocusDirection.Up else FocusDirection.Down); true
                     }

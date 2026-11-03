@@ -38,9 +38,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 
-private val lower = listOf("abcdefghijklm", "nopqrstuvwxyz", "1234567890-_.")
-private val upper = listOf("ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "1234567890-_.")
-private val symbols = listOf("/:@?=&%#+~!$", "*()[]{}<>,;'\"", "1234567890-_.")
+private val lower = listOf("1234567890", "qwertyuiop", "asdfghjkl:", "zxcvbnm-_.", "/@?=&")
+private val upper = listOf("1234567890", "QWERTYUIOP", "ASDFGHJKL:", "ZXCVBNM-_.", "/@?=&")
+private val symbols = listOf("1234567890", "!#$%^*+~|\\", "()[]{}<>;'", "\",`´€£¥§°…", "/@?=&")
 private val digits = listOf("123", "456", "789", "0")
 private val urlSnippets = listOf("http://", "https://", ".com", ".net", ":8080", "/get.php?", "username=", "&password=")
 
@@ -52,9 +52,10 @@ private val urlSnippets = listOf("http://", "https://", ".com", ".net", ":8080",
 @Composable
 fun TextEntryDialog(
     title: String, initial: String, onDone: (String) -> Unit, onDismiss: () -> Unit,
-    number: Boolean = false, secret: Boolean = false, url: Boolean = false,
+    number: Boolean = false, secret: Boolean = false, url: Boolean = false, onChange: (String) -> Unit = {},
 ) {
     var text by remember { mutableStateOf(initial) }
+    LaunchedEffect(text) { if (text != initial) onChange(text) }
     var mode by remember { mutableStateOf(0) }   // 0 abc, 1 ABC, 2 symbols
     val firstKey = remember { FocusRequester() }
     fun type(s: String) { text += s }
@@ -80,14 +81,15 @@ fun TextEntryDialog(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.surfaceHi).padding(16.dp),
                 textStyle = TextStyle(color = C.text, fontSize = 20.sp),
                 keyboardType = if (number) KeyboardType.NumberPassword else if (url) KeyboardType.Uri else KeyboardType.Text,
-                secret = secret, onSubmit = { onDone(text) },
+                secret = secret, onSubmit = { onDone(text) }, onScreenKeyboard = false,
             )
             Spacer(Modifier.height(18.dp))
             if (number) {
                 digits.forEachIndexed { r, row -> KeyRow(row.map { it.toString() }, 64.dp, if (r == 0) firstKey else null) { type(it) } }
             } else {
                 val rows = when (mode) { 1 -> upper; 2 -> symbols; else -> lower }
-                rows.forEachIndexed { r, row -> KeyRow(row.map { it.toString() }, 52.dp, if (r == 0) firstKey else null) { type(it) } }
+                // QWERTY, starting on Q so the letters are one press away.
+                rows.forEachIndexed { r, row -> KeyRow(row.map { it.toString() }, 58.dp, if (r == 1) firstKey else null) { type(it) } }
                 if (url) KeyRow(urlSnippets, null, null) { type(it) }
             }
             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

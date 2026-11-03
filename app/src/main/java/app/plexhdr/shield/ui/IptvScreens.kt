@@ -136,7 +136,7 @@ private fun SectionSearch(sec: Section, hint: String) {
                 .background(if (q.isNotEmpty()) C.surfaceHi else Color(0x33FFFFFF))
                 .border(2.dp, if (f) C.focus else Color.Transparent, RoundedCornerShape(50))
                 .padding(horizontal = 20.dp, vertical = 10.dp),
-            textStyle = TextStyle(color = C.text, fontSize = 16.sp), imeAction = ImeAction.Search, onFocus = { f = it },
+            textStyle = TextStyle(color = C.text, fontSize = 16.sp), imeAction = ImeAction.Search, title = "Search", onFocus = { f = it },
             decorationBox = { inner ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     T("⌕  ", size = 16.sp, color = C.faint)
@@ -818,7 +818,7 @@ private fun SearchSection(nav: Nav) {
                     Ui.query, { Ui.query = it },
                     Modifier.width(460.dp).clip(RoundedCornerShape(50)).background(C.surfaceHi)
                         .border(2.dp, if (sf) C.focus else Color.Transparent, RoundedCornerShape(50)).padding(horizontal = 22.dp, vertical = 12.dp),
-                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), imeAction = ImeAction.Search, onFocus = { sf = it },
+                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), imeAction = ImeAction.Search, title = "Search", onFocus = { sf = it },
                     decorationBox = { inner -> if (Ui.query.isEmpty()) T("Search channels, programmes, movies, series", size = 16.sp, color = C.faint); inner() },
                 )
                 SearchScope.entries.forEach { sc -> Pill(sc.label, { Ui.scope = sc }, selected = Ui.scope == sc) }
