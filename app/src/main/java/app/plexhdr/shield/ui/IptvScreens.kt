@@ -95,9 +95,15 @@ import java.util.Locale
  * and Playlists. INFO, MENU or a long press on a channel or poster opens its options. */
 
 internal enum class Section(val label: String) {
-    Home("Home"), Live("Live TV"), Guide("TV Guide"), Movies("Movies"), Series("Series"), Favorites("Favorites"),
-    Search("Search"), Downloads("Downloads"), Recordings("Recordings"), Playlists("Playlists"),
+    Home("Home"), Live("Live TV"), Guide("Guide"), Movies("Movies"), Series("Series"), Favorites("Favorites"),
+    Search("Search"), Downloads("Downloads"), Recordings("Recordings"), Playlists("Sources"),
 }
+
+/** Live TV's tabs in the top bar. Downloads sit inside Recordings (a Recordings | Downloads switch there). */
+internal val iptvTabs = listOf(
+    Section.Home, Section.Live, Section.Guide, Section.Movies, Section.Series, Section.Favorites, Section.Search,
+    Section.Recordings, Section.Playlists,
+)
 
 /** One row of an options sheet. */
 data class SheetRow(val label: String, val detail: String? = null, val header: Boolean = false, val action: () -> Unit = {})
@@ -207,15 +213,20 @@ private fun withPin(g: IptvGroup?, then: () -> Unit) {
 
 /* ---------------- frame ---------------- */
 
+/** The open Live TV section, picked with the top bar's tabs in Live TV mode. */
+internal var iptvSection: Section
+    get() = Ui.section
+    set(value) { Ui.section = value }
+
+/** Inside Recordings: true shows downloads instead. */
+private var showDownloads by mutableStateOf(false)
+
 @Composable
 fun IptvHome(nav: Nav) {
     val s = App.iptv
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(top = 76.dp)) {
-            LazyRow(contentPadding = PaddingValues(horizontal = D.gutter, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(Section.entries.toList()) { sec -> Pill(sec.label, { Ui.section = sec }, selected = sec == Ui.section) }
-            }
-            Spacer(Modifier.height(8.dp))
+        // The sections are the top bar's tabs; the page starts below the bar.
+        Column(Modifier.fillMaxSize().padding(top = 88.dp)) {
             if (s.playlists.isEmpty() && Ui.section !in setOf(Section.Playlists, Section.Downloads, Section.Recordings)) Welcome(nav)
             else when (Ui.section) {
                 Section.Home -> HomeSection(nav)
@@ -225,8 +236,11 @@ fun IptvHome(nav: Nav) {
                 Section.Series -> LibrarySection(nav, movies = false)
                 Section.Favorites -> FavoritesSection(nav)
                 Section.Search -> SearchSection(nav)
-                Section.Downloads -> JobsSection(nav, Recorder.Kind.Download)
-                Section.Recordings -> JobsSection(nav, Recorder.Kind.Recording)
+                Section.Downloads, Section.Recordings -> {
+                    Segmented(listOf("Recordings", "Downloads"), if (showDownloads) 1 else 0, { showDownloads = it == 1 },
+                        Modifier.padding(start = D.gutter, bottom = 10.dp))
+                    JobsSection(nav, if (showDownloads) Recorder.Kind.Download else Recorder.Kind.Recording)
+                }
                 Section.Playlists -> PlaylistsSection(nav)
             }
         }
@@ -781,7 +795,7 @@ fun IptvMovieScreen(nav: Nav, m: Movie) {
         }
         IptvOverlays()
     }
-    LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
+    FocusOnShow(play)
 }
 
 @Composable
@@ -824,7 +838,7 @@ fun IptvSeriesScreen(nav: Nav, x: Series) {
         }
         IptvOverlays()
     }
-    LaunchedEffect(resumeEp?.id) { delay(80); runCatching { play.requestFocus() } }
+    FocusOnShow(play, resumeEp?.id, delayMs = 80)
 }
 
 @Composable
