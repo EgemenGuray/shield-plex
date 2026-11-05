@@ -52,7 +52,7 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
     var onDeck by retain("onDeck") { mutableStateOf<List<PlexItem>>(emptyList()) }
     var recent by retain("recent") { mutableStateOf<List<Pair<PlexSection, List<PlexItem>>>>(emptyList()) }
     var loaded by retain("loaded") { mutableStateOf(false) }
-    LaunchedEffect(sections) {
+    LaunchedEffect(sections, CardMenu.changes) {   // reload after the card menu changed something
         // Retry until something comes back (server asleep, Wi-Fi not up yet after the Shield wakes).
         var wait = 1000L
         while (true) {
@@ -105,7 +105,7 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
                     next = { heroIndex = (heroIndex + 1) % featured.size })
             }
             item(key = "deck") {
-                ItemShelf("Continue Watching", onDeck, nav::open, wide = true) { focusedItem = it; heroFocused = false }
+                ItemShelf("Continue Watching", onDeck, nav::open, wide = true, continueWatching = true) { focusedItem = it; heroFocused = false }
             }
             recent.forEach { (s, list) ->
                 item(key = "recent-${s.id}") {

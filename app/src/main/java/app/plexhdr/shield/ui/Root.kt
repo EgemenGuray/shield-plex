@@ -195,6 +195,7 @@ private fun Main(iptvOnly: Boolean = false) {
                     .clip(RoundedCornerShape(50)).background(Color(0xE62C2C34)).padding(horizontal = 26.dp, vertical = 12.dp),
             ) { T("Press Back again to exit", size = 16.sp, weight = FontWeight.SemiBold) }
         }
+        GlobalHosts(nav)   // card menu, lumen:// deep links, Play Next updates (ui/GlobalHosts.kt)
     }
 }
 
