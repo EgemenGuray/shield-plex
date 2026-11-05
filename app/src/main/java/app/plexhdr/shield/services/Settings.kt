@@ -64,6 +64,8 @@ class Settings(context: Context) {
     var introSound by pref("introSound", true)
     /** Use Lumen for Live TV (IPTV) only, without signing in to Plex. */
     var iptvOnly by pref("iptvOnly", false)
+    /** The half of the app last used (Plex or Live TV); the app opens in it. */
+    var liveTvMode by pref("liveTvMode", false)
 
     var tmdbKey by pref("tmdbKey", BuildKeys.TMDB)
     var omdbKey by pref("omdbKey", BuildKeys.OMDB)

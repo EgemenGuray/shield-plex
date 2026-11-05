@@ -50,10 +50,11 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val scope = rememberCoroutineScope()
     // Referential: PlexItem.equals only compares id and progress, so the full copy (with streams) fetched below
     // would otherwise count as "unchanged" and the page kept showing the stream-less copy from the row.
-    var item by remember { mutableStateOf(initial, referentialEqualityPolicy()) }
-    var loaded by remember { mutableStateOf(false) }
-    var season by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
-    var similar by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
+    // Retained: back from the player or another page, the details are there at once and refresh quietly.
+    var item by retain("item") { mutableStateOf(initial, referentialEqualityPolicy()) }
+    var loaded by retain("loaded") { mutableStateOf(false) }
+    var season by retain("season") { mutableStateOf<List<PlexItem>>(emptyList()) }
+    var similar by retain("similar") { mutableStateOf<List<PlexItem>>(emptyList()) }
     var dialog by remember { mutableStateOf<String?>(null) }
     var version by remember { mutableIntStateOf(App.memory.record(initial).mediaIndex ?: 0) }
     var audioId by remember { mutableStateOf(App.memory.record(initial).audioId) }
@@ -75,7 +76,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val ratings by rememberRatings(item)
     val resumeMs = App.memory.resumePositionMs(item)
     val play = remember { FocusRequester() }
-    LaunchedEffect(loaded) { runCatching { play.requestFocus() } }
+    FocusOnShow(play, loaded)
 
     Box(Modifier.fillMaxSize()) {
         Backdrop(backdropUrl(item, art))
@@ -127,7 +128,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
             if (season.isNotEmpty()) item {
                 Shelf("Season ${item.parentIndex ?: ""}", season, { it.id }) { ep ->
                     WideCard("${ep.index ?: ""}. ${ep.title}", formatRuntime(ep.durationMs), plexImage(ep.thumb, 600, 338), ep.progress, {
-                        nav.stack[nav.stack.lastIndex] = Screen.Detail(ep)
+                        nav.replace(Screen.Detail(ep))
                     })
                 }
             }

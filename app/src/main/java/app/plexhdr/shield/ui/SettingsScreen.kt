@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -193,7 +192,7 @@ fun SettingsScreen(nav: Nav) {
     }
 
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+    FocusOnShow(first)
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().padding(top = 90.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 160.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
