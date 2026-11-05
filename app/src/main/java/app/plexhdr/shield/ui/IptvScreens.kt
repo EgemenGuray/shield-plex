@@ -40,6 +40,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -134,7 +136,7 @@ private fun SectionSearch(sec: Section, hint: String) {
                 .background(if (q.isNotEmpty()) C.surfaceHi else Color(0x33FFFFFF))
                 .border(2.dp, if (f) C.focus else Color.Transparent, RoundedCornerShape(50))
                 .padding(horizontal = 20.dp, vertical = 10.dp),
-            textStyle = TextStyle(color = C.text, fontSize = 16.sp), imeAction = ImeAction.Search, onFocus = { f = it },
+            textStyle = TextStyle(color = C.text, fontSize = 16.sp), imeAction = ImeAction.Search, title = "Search", onFocus = { f = it },
             decorationBox = { inner ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     T("⌕  ", size = 16.sp, color = C.faint)
@@ -215,28 +217,8 @@ fun IptvOverlays() {
 
 @Composable
 private fun InputDialog(inp: IptvInput) {
-    var text by remember(inp) { mutableStateOf(inp.value) }
-    val focus = remember { FocusRequester() }
-    BackHandler { Ui.input = null }
-    fun done() { Ui.input = null; inp.done(text) }
-    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(720.dp).clip(RoundedCornerShape(20.dp)).background(C.surface).padding(28.dp)) {
-            T(inp.title, size = 24.sp, weight = FontWeight.Bold)
-            Spacer(Modifier.height(16.dp))
-            TvTextField(
-                text, { text = it },
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.surfaceHi).padding(16.dp),
-                textStyle = TextStyle(color = C.text, fontSize = 20.sp),
-                keyboardType = if (inp.number) KeyboardType.NumberPassword else KeyboardType.Uri,
-                secret = inp.secret, startEditing = true, focusRequester = focus, onSubmit = { done() },
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Pill("Done", { done() })
-                Pill("Cancel", { Ui.input = null })
-            }
-        }
-    }
+    val url = inp.title.contains("address", true) || inp.title.contains("url", true) || inp.title.contains("server", true) || inp.value.startsWith("http")
+    TextEntryDialog(inp.title, inp.value, { Ui.input = null; inp.done(it) }, { Ui.input = null }, number = inp.number, secret = inp.secret, url = url)
 }
 
 @Composable
@@ -680,10 +662,10 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
 private fun <E> Grid(list: List<E>, key: (E) -> Any, content: @Composable (E) -> Unit) {
     if (list.isEmpty()) { Box(Modifier.padding(D.gutter)) { T(if (App.iptv.isLoading()) "Loading…" else "Nothing here.", color = C.dim) }; return }
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(D.posterW + 24.dp),
+        columns = GridCells.FixedSize(D.posterW),
         contentPadding = PaddingValues(horizontal = D.gutter, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(26.dp),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         items(list.size, key = { key(list[it]) }) { content(list[it]) }
     }
@@ -836,7 +818,7 @@ private fun SearchSection(nav: Nav) {
                     Ui.query, { Ui.query = it },
                     Modifier.width(460.dp).clip(RoundedCornerShape(50)).background(C.surfaceHi)
                         .border(2.dp, if (sf) C.focus else Color.Transparent, RoundedCornerShape(50)).padding(horizontal = 22.dp, vertical = 12.dp),
-                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), imeAction = ImeAction.Search, onFocus = { sf = it },
+                    textStyle = TextStyle(color = C.text, fontSize = 18.sp), imeAction = ImeAction.Search, title = "Search", onFocus = { sf = it },
                     decorationBox = { inner -> if (Ui.query.isEmpty()) T("Search channels, programmes, movies, series", size = 16.sp, color = C.faint); inner() },
                 )
                 SearchScope.entries.forEach { sc -> Pill(sc.label, { Ui.scope = sc }, selected = Ui.scope == sc) }

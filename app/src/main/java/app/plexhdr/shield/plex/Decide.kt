@@ -260,4 +260,34 @@ object Decide {
         if (subs.any { it.hearingImpaired }) out += "SDH" else if (subs.isNotEmpty()) out += "CC"
         return out
     }
+
+    /**
+     * Names for a list of tracks. Tracks that would otherwise read the same (two "Español SRT": Latin American and
+     * Castilian) get what tells them apart: region, track title, forced / SDH, codec, or finally their position.
+     */
+    fun trackLabels(list: List<PlexStream>): List<String> {
+        val base = list.map { it.extendedDisplayTitle }
+        return list.mapIndexed { i, s ->
+            if (base.count { it == base[i] } < 2) return@mapIndexed base[i]
+            val extra = listOfNotNull(
+                s.languageTag?.let { regionName(it) },
+                s.title?.takeIf { t -> t.isNotBlank() && !base[i].contains(t, true) },
+                if (s.forced) "Forced" else null,
+                if (s.hearingImpaired) "SDH" else null,
+            ).distinct()
+            val tried = if (extra.isEmpty()) base[i] else "${base[i]} · ${extra.joinToString(" · ")}"
+            if (list.indices.count { j -> j != i && base[j] == base[i] } > 0 && extra.isEmpty())
+                "${base[i]} ${(0..i).count { j -> base[j] == base[i] }}"   // "Español SRT 1", "Español SRT 2"
+            else tried
+        }
+    }
+
+    private fun regionName(tag: String): String? {
+        val parts = tag.split('-', '_')
+        if (parts.size < 2) return null
+        val region = parts[1]
+        if (region == "419") return "Latin America"
+        return runCatching { java.util.Locale("", region).displayCountry.ifBlank { null } }.getOrNull() ?: region
+    }
+
 }

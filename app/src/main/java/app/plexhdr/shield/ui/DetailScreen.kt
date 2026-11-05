@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -47,7 +48,9 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val ctx = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
-    var item by remember { mutableStateOf(initial) }
+    // Referential: PlexItem.equals only compares id and progress, so the full copy (with streams) fetched below
+    // would otherwise count as "unchanged" and the page kept showing the stream-less copy from the row.
+    var item by remember { mutableStateOf(initial, referentialEqualityPolicy()) }
     var loaded by remember { mutableStateOf(false) }
     var season by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
     var similar by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
@@ -59,13 +62,13 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
     val caps = remember { Engine.caps(ctx, view.display) }
 
     LaunchedEffect(initial.id, refresh) {
-        initial.ratingKey?.let { rk -> runCatching { plex.metadata(rk) }.getOrNull()?.let { item = it } }
+        initial.ratingKey?.let { rk -> plex.fullItem(rk)?.let { item = it } }
         loaded = true
         if (item.type == "episode") item.parentRatingKey?.let { season = runCatching { plex.children(it) }.getOrDefault(emptyList()) }
         else similar = item.ratingKey?.let { plex.similar(it) } ?: emptyList()
     }
 
-    val plan = remember(item, version, audioId, subtitleId, settings.audioOutput, settings.dolbyVision) {
+    val plan = remember(System.identityHashCode(item), version, audioId, subtitleId, settings.audioOutput, settings.dolbyVision) {
         Decide.plan(item, version, audioId, subtitleId, settings, caps)
     }
     val art by rememberArtwork(if (item.type == "episode") null else item)
@@ -103,7 +106,7 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
                         if (resumeMs > 0) item { Pill("Start Over", { nav.play(item, 0L, version, audioId, subtitleId) }) }
                         val trailer = item.extras.firstOrNull { it.subtype == "trailer" } ?: item.extras.firstOrNull()
                         if (trailer != null) item { Pill("Trailer", { nav.play(trailer, 0L) }) }
-                        item { Pill("Audio & Subtitles", { dialog = "tracks" }) }
+                        if (loaded) item { Pill("Audio & Subtitles", { dialog = "tracks" }) }
                         if (item.media.size > 1) item { Pill("Version", { dialog = "version" }) }
                         item {
                             Pill(if (item.isWatched) "Mark Unwatched" else "Mark Watched", {
@@ -145,16 +148,20 @@ fun DetailScreen(nav: Nav, initial: PlexItem) {
                 val choices = ArrayList<Choice>()
                 val actions = ArrayList<() -> Unit>()
                 choices += Choice("Audio", header = true); actions += {}
-                part?.audioStreams?.forEach { s ->
-                    choices += Choice(s.extendedDisplayTitle, Decide.bitstreamKey(s)?.let { k ->
+                val audios = part?.audioStreams ?: emptyList()
+                val audioNames = Decide.trackLabels(audios)
+                audios.forEachIndexed { n, s ->
+                    choices += Choice(audioNames[n], Decide.bitstreamKey(s)?.let { k ->
                         if (k in caps.bitstream || (k == "eac3joc" && "eac3" in caps.bitstream)) "Bitstream to the soundbar" else "Decoded to PCM on the Shield"
                     }, s.id == plan.audio?.id)
                     actions += { audioId = s.id; App.memory.update(item) { it.audioId = s.id } }
                 }
                 choices += Choice("Subtitles", header = true); actions += {}
                 choices += Choice("Off", selected = plan.subtitle == null); actions += { subtitleId = -1; App.memory.update(item) { it.subtitleId = -1 } }
-                part?.subtitleStreams?.forEach { s ->
-                    choices += Choice(s.extendedDisplayTitle, if (s.isExternal) "External file" else "Embedded", s.id == plan.subtitle?.id)
+                val subs = part?.subtitleStreams ?: emptyList()
+                val subNames = Decide.trackLabels(subs)
+                subs.forEachIndexed { n, s ->
+                    choices += Choice(subNames[n], if (s.isExternal) "External file" else "Embedded", s.id == plan.subtitle?.id)
                     actions += { subtitleId = s.id; App.memory.update(item) { it.subtitleId = s.id; it.onlineSubtitle = null } }
                 }
                 ChoiceDialog("Audio & Subtitles", choices, { i -> actions[i](); dialog = null }, { dialog = null })

@@ -1,6 +1,5 @@
 package app.plexhdr.shield.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,7 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,14 +34,16 @@ data class Choice(val label: String, val detail: String? = null, val selected: B
 /** A list of choices over a dimmed page. Back closes it. */
 @Composable
 fun ChoiceDialog(title: String, choices: List<Choice>, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
-    BackHandler(onBack = onDismiss)
     val first = remember { FocusRequester() }
     val focusIndex = choices.indexOfFirst { it.selected && !it.header }.takeIf { it >= 0 } ?: choices.indexOfFirst { !it.header }
-    Box(Modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
+    // Start scrolled to the current choice so it is composed and can take focus.
+    val list = rememberLazyListState(initialFirstVisibleItemIndex = (focusIndex - 1).coerceAtLeast(0))
+    // A real dialog window: the D-pad stays in the list and can't wander to the page behind.
+    Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.width(720.dp).clip(RoundedCornerShape(20.dp)).background(C.surface).padding(28.dp)) {
             T(title, size = 24.sp, weight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
-            LazyColumn(Modifier.height(520.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(Modifier.heightIn(max = 520.dp), state = list, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(choices.size) { i ->
                     val c = choices[i]
                     if (c.header) {
@@ -54,8 +60,8 @@ fun ChoiceDialog(title: String, choices: List<Choice>, onPick: (Int) -> Unit, on
                 }
             }
         }
+        LaunchedEffect(Unit) { repeat(20) { if (runCatching { first.requestFocus() }.isSuccess) return@LaunchedEffect; delay(16) } }
     }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
 }
 
 /** A text sheet (technical info). */

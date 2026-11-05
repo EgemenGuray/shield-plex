@@ -1,5 +1,9 @@
 package app.plexhdr.shield.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -12,8 +16,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -30,9 +36,15 @@ import androidx.compose.ui.text.input.VisualTransformation
 import kotlinx.coroutines.delay
 
 /**
- * A text field that behaves on a remote: moving over it doesn't pop up the keyboard or trap the D-pad.
- * OK opens the keyboard; the keyboard's Done / Search key (or Up / Down) closes it and gives the D-pad back.
- * [startEditing] opens the keyboard straight away, for dialogs that exist only to type.
+ * A text field that behaves on a remote.
+ *
+ * It is two layers: an outer box that the D-pad lands on like any button, and the real text field
+ * inside, which can only take focus while typing. Pressing OK on the box hands focus to the inner
+ * field, which starts a fresh input session and opens the keyboard. Done / Search on the keyboard,
+ * or Up / Down after the keyboard was closed with Back, gives focus back to the box.
+ *
+ * (The previous version toggled `readOnly` on a field that already had focus. Compose doesn't
+ * start an input session in that case, so the keyboard never came up and the arrows kept scrolling.)
  */
 @Composable
 fun TvTextField(
@@ -48,53 +60,75 @@ fun TvTextField(
     onFocus: (Boolean) -> Unit = {},
     onSubmit: () -> Unit = {},
     decorationBox: @Composable (inner: @Composable () -> Unit) -> Unit = { it() },
+    /** OK opens Lumen's QWERTY grid (D-pad keys, like the Tizen and Apple TV apps); false = the system keyboard. */
+    onScreenKeyboard: Boolean = true,
+    title: String = "",
 ) {
-    var editing by remember { mutableStateOf(startEditing) }
+    var grid by remember { mutableStateOf(onScreenKeyboard && startEditing) }
+    if (grid) {
+        TextEntryDialog(title, value, { onValueChange(it); grid = false; runCatching { focusRequester.requestFocus() }; onSubmit() },
+            { grid = false; runCatching { focusRequester.requestFocus() } },
+            number = keyboardType == KeyboardType.NumberPassword || keyboardType == KeyboardType.Number,
+            secret = secret, url = keyboardType == KeyboardType.Uri, onChange = onValueChange)
+    }
+    var editing by remember { mutableStateOf(startEditing && !onScreenKeyboard) }
+    val field = remember { FocusRequester() }
+    var fieldFocused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    fun finish() { editing = false; keyboard?.hide() }
-    LaunchedEffect(editing) {
-        if (editing) {
-            runCatching { focusRequester.requestFocus() }
-            delay(60)   // after the field is editable again
-            keyboard?.show()
-        }
+
+    fun finish(moveTo: FocusDirection? = null) {
+        editing = false
+        keyboard?.hide()
+        runCatching { focusRequester.requestFocus() }
+        if (moveTo != null) focusManager.moveFocus(moveTo)
     }
-    BasicTextField(
-        value, onValueChange,
+
+    // Back while typing (after the keyboard has closed) stops typing; the next Back leaves the page or dialog.
+    BackHandler(enabled = editing) { finish() }
+    LaunchedEffect(editing) {
+        if (!editing) return@LaunchedEffect
+        delay(30)   // let focusProperties(canFocus = true) apply first
+        runCatching { field.requestFocus() }
+        // The input session starts on focus; ask for the keyboard a few times in case it isn't ready yet.
+        for (wait in longArrayOf(50, 200, 500)) { delay(wait); keyboard?.show() }
+    }
+
+    Box(
         modifier
             .focusRequester(focusRequester)
-            .onFocusChanged { onFocus(it.isFocused); if (!it.isFocused) editing = false }
+            .onFocusChanged { onFocus(it.hasFocus) }
             .onPreviewKeyEvent { e ->
                 val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
                 when {
-                    !editing && ok -> { if (e.type == KeyEventType.KeyUp) editing = true; true }
-                    // Not typing: the arrows move between controls instead of the cursor.
-                    !editing && e.type == KeyEventType.KeyDown -> when (e.key) {
-                        Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
-                        Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
-                        Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
-                        Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-                        else -> false
-                    }
-                    // Typing (keyboard closed with Back): up / down stop typing and move on.
+                    !editing && ok -> { if (e.type == KeyEventType.KeyUp) { if (onScreenKeyboard) grid = true else editing = true }; true }
                     editing && e.type == KeyEventType.KeyDown && (e.key == Key.DirectionUp || e.key == Key.DirectionDown) -> {
-                        finish()
-                        focusManager.moveFocus(if (e.key == Key.DirectionUp) FocusDirection.Up else FocusDirection.Down)
-                        true
+                        finish(if (e.key == Key.DirectionUp) FocusDirection.Up else FocusDirection.Down); true
                     }
                     else -> false
                 }
-            },
-        readOnly = !editing,
-        textStyle = textStyle,
-        cursorBrush = SolidColor(if (editing) C.accent else androidx.compose.ui.graphics.Color.Transparent),
-        singleLine = true,
-        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction, autoCorrectEnabled = false),
-        keyboardActions = KeyboardActions(
-            onDone = { finish(); onSubmit() }, onSearch = { finish(); onSubmit() }, onGo = { finish(); onSubmit() },
-        ),
-        decorationBox = decorationBox,
-    )
+            }
+            .focusable(),
+    ) {
+        BasicTextField(
+            value, onValueChange,
+            Modifier.fillMaxWidth()
+                .focusRequester(field)
+                .focusProperties { canFocus = editing }
+                .onFocusChanged {
+                    // Leaving the field (Back out of a dialog, focus moved by code) ends typing.
+                    if (fieldFocused && !it.isFocused) editing = false
+                    fieldFocused = it.isFocused
+                },
+            textStyle = textStyle,
+            cursorBrush = SolidColor(if (editing) C.accent else Color.Transparent),
+            singleLine = true,
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction, autoCorrectEnabled = false),
+            keyboardActions = KeyboardActions(
+                onDone = { finish(); onSubmit() }, onSearch = { finish(); onSubmit() }, onGo = { finish(); onSubmit() },
+            ),
+            decorationBox = decorationBox,
+        )
+    }
 }

@@ -95,10 +95,10 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
         if (items.isEmpty() && loading) { Loading(); return@Column }
         if (items.isEmpty()) { Box(Modifier.padding(D.gutter)) { T("Nothing here.", color = C.dim) }; return@Column }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(D.posterW + 24.dp),
+            columns = GridCells.FixedSize(D.posterW),
             contentPadding = PaddingValues(horizontal = D.gutter, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(26.dp),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             items(items.size) { i ->
                 val item = items[i]
@@ -127,10 +127,10 @@ fun GridPage(nav: Nav, title: String, items: List<PlexItem>?, header: @Composabl
         header()
         if (items == null) { Loading(); return@Column }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(D.posterW + 24.dp),
+            columns = GridCells.FixedSize(D.posterW),
             contentPadding = PaddingValues(horizontal = D.gutter, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(26.dp),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             items(items, key = { it.id }) { item -> PosterCard(item, { nav.open(item) }) }
         }

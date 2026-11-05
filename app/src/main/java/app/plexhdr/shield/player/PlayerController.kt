@@ -44,12 +44,12 @@ import java.util.UUID
 class PlayerController(
     private val activity: Activity,
     item: PlexItem,
-    mediaIndex: Int?,
-    audioId: Int?,
-    subtitleId: Int?,
+    private val mediaIndex: Int?,
+    private val audioId: Int?,
+    private val subtitleId: Int?,
     private val onClose: () -> Unit,
 ) {
-    enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Picture("Picture") }
+    enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Version("Version"), Picture("Picture") }
     enum class Fit(val label: String) { Fit("Original"), Zoom("Zoom to fill"), Stretch("Stretch") }
 
     private val settings: Settings = App.settings
@@ -58,7 +58,7 @@ class PlayerController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
 
-    var item by mutableStateOf(item); private set
+    var item by mutableStateOf(item, androidx.compose.runtime.referentialEqualityPolicy()); private set   // see DetailScreen
     var caps by mutableStateOf(Engine.caps(activity, activity.window.decorView.display)); private set
     var onlineSubtitle by mutableStateOf<String?>(null); private set
     var plan by mutableStateOf(initialPlan(item, mediaIndex, audioId, subtitleId)); private set
@@ -111,7 +111,20 @@ class PlayerController(
     // ---- Opening
 
     fun start(startMs: Long?) {
-        open(startMs ?: memory.resumePositionMs(item))
+        scope.launch {
+            // Items from Home rows and hubs come without their streams. Without them there is no audio list,
+            // no bitstream decision (DTS-HD, TrueHD) and no frame rate to match, so fetch the full item first.
+            // Always: Home rows, hubs and Continue Watching don't carry streams, and an old copy may be stale.
+            run {
+                item.ratingKey?.let { rk -> plex.fullItem(rk) }?.takeIf { full ->
+                    full.media.any { it.part?.streams?.isNotEmpty() == true } || item.media.none { it.part?.streams?.isNotEmpty() == true }
+                }?.let { full ->
+                    item = full
+                    plan = initialPlan(full, mediaIndex, audioId, subtitleId)
+                }
+            }
+            open(startMs ?: memory.resumePositionMs(item))
+        }
         scope.launch { loadExtras() }
         hideOverlaySoon()
         scope.launch {
@@ -159,10 +172,38 @@ class PlayerController(
     private fun buildPlayer(): ExoPlayer {
         Engine.stripDolbyVision = plan.stripDolbyVision
         val pcm = pcmFallback || settings.audioOutput == Settings.AudioOutput.Pcm
+        Engine.dtsHdPassthrough = !pcm && wantsDtsHd(plan.audio)
         return Engine.build(activity, plex.http, pcm).also { it.addListener(listener) }
     }
 
+    private var openJob: Job? = null
+
+    /**
+     * Opens the file at [startMs]. If the TV has to change refresh rate first, wait for that to finish: the HDMI link
+     * (and with it the soundbar's list of formats) drops for a moment during the switch, and an AudioTrack opened
+     * then dies and comes back as PCM. That is why DTS-HD reached the soundbar as multichannel PCM.
+     */
     private fun open(startMs: Long) {
+        openJob?.cancel()
+        openJob = scope.launch {
+            if (matchDisplay()) {
+                player?.let { it.removeListener(listener); it.release() }
+                player = null
+                buffering = true
+                awaitHdmi()
+            }
+            openNow(startMs)
+        }
+    }
+
+    private suspend fun awaitHdmi() {
+        val main = activity as? MainActivity ?: return
+        val until = System.currentTimeMillis() + 6000
+        while (!main.displaySettled() && System.currentTimeMillis() < until) delay(100)
+        delay(2500)   // the soundbar re-announces its formats a moment after the picture comes back
+    }
+
+    private fun openNow(startMs: Long) {
         error = null
         appliedTracks = false
         embeddedCues = emptyList()
@@ -182,7 +223,6 @@ class PlayerController(
             url = part?.let { plex.directPlayUrl(it) }
         }
         if (url == null) { error = "This item has no playable file."; return }
-        matchDisplay()
         val old = player
         old?.removeListener(listener)
         old?.release()
@@ -195,10 +235,17 @@ class PlayerController(
         loadExternalSubtitle()
     }
 
-    private fun matchDisplay() {
-        val v = plan.video ?: return
-        val fps = v.frameRate?.toFloat() ?: return
-        (activity as? MainActivity)?.matchDisplay(fps, v.width ?: 0, v.height ?: 0, settings.matchFrameRate, settings.matchResolution)
+    private var matchedFps = 0f
+
+    /** [decodedFps] is the rate the decoder reports, used when Plex didn't give one (or gave it as "24p"). True if the mode changes. */
+    private fun matchDisplay(decodedFps: Float = 0f): Boolean {
+        val v = plan.video
+        val fps = v?.frameRate?.toFloat()?.takeIf { it > 1 } ?: decodedFps.takeIf { it > 1 }
+            ?: when (plan.media?.str("videoFrameRate")) { "24p" -> 23.976f; "PAL" -> 25f; "NTSC" -> 29.97f; "60p" -> 59.94f; else -> null }
+            ?: return false
+        if (fps == matchedFps) return false
+        matchedFps = fps
+        return (activity as? MainActivity)?.matchDisplay(fps, v?.width ?: 0, v?.height ?: 0, settings.matchFrameRate, settings.matchResolution) == true
     }
 
     private suspend fun loadExtras() {
@@ -215,7 +262,9 @@ class PlayerController(
         val pos = currentPosition()
         if (!retried) {
             retried = true
-            open(pos)
+            // Often an HDMI hiccup (TV or soundbar renegotiating): give the link a moment before trying again.
+            openJob?.cancel()
+            openJob = scope.launch { buffering = true; delay(2500); openNow(pos) }
             return
         }
         if (!pcmFallback && plan.bitstream && settings.audioOutput == Settings.AudioOutput.Passthrough) {
@@ -255,7 +304,9 @@ class PlayerController(
 
     private fun selectAudioTrack(s: PlexStream) {
         val exo = player ?: return
-        val g = findGroup(C.TRACK_TYPE_AUDIO, s, plan.part?.audioStreams ?: emptyList()) ?: return
+        val g = findGroup(C.TRACK_TYPE_AUDIO, s, plan.part?.audioStreams ?: emptyList())
+        android.util.Log.i("Lumen", "selectAudioTrack ${s.id} index=${s.index} -> group ${g?.mediaTrackGroup?.getFormat(0)?.let { "${it.id} ${it.sampleMimeType}" }}")
+        if (g == null) return
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
             .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, 0))
             .build()
@@ -285,6 +336,14 @@ class PlayerController(
                 if (!g.isTrackSelected(i)) continue
                 val f = g.getTrackFormat(i)
                 when (g.type) {
+                    // Plex had no frame rate: switch now, then reopen once the HDMI link is back so the audio survives.
+                    C.TRACK_TYPE_VIDEO -> if (f.frameRate > 1 && matchDisplay(f.frameRate)) {
+                        val pos = currentPosition()
+                        openJob?.cancel()
+                        openJob = scope.launch { player?.pause(); awaitHdmi(); openNow(pos) }
+                    }
+                }
+                when (g.type) {
                     C.TRACK_TYPE_VIDEO -> videoInfo = listOfNotNull(f.sampleMimeType, f.codecs, "${f.width}×${f.height}",
                         if (f.frameRate > 0) String.format("%.3f fps", f.frameRate) else null,
                         f.colorInfo?.let { c -> if (c.colorTransfer == C.COLOR_TRANSFER_ST2084) "PQ (HDR10)" else if (c.colorTransfer == C.COLOR_TRANSFER_HLG) "HLG" else null },
@@ -296,13 +355,21 @@ class PlayerController(
         }
     }
 
+    private fun wantsDtsHd(a: PlexStream?) = a != null && Decide.isDtsHD(a) && "dtshd" in caps.bitstream
+
     fun chooseAudio(s: PlexStream) {
+        android.util.Log.i("Lumen", "chooseAudio ${s.id} ${s.extendedDisplayTitle}; part streams=${plan.part?.streams?.size}")
+        if (s.id == plan.audio?.id && player != null) { panel = null; return }   // already playing this one
         memory.update(item) { it.audioId = s.id }
         plan.part?.id?.let { pid -> scope.launch { plex.selectStreams(pid, s.id, null) } }
         val before = plan
         plan = Decide.plan(item, plan.mediaIndex, s.id, plan.subtitle?.id ?: -1, settings, caps)
         // A bitstream ↔ PCM change needs a different renderer path; reopen at the same point.
-        if (before.bitstream != plan.bitstream || plan.engine == Decide.Engine.Transcode4K) open(currentPosition()) else selectAudioTrack(s)
+        val pcm = pcmFallback || settings.audioOutput == Settings.AudioOutput.Pcm
+        val dtsHd = !pcm && wantsDtsHd(s)
+        val dtsHdChanged = dtsHd != Engine.dtsHdPassthrough
+        Engine.dtsHdPassthrough = dtsHd
+        if (before.bitstream != plan.bitstream || dtsHdChanged || plan.engine == Decide.Engine.Transcode4K) open(currentPosition()) else selectAudioTrack(s)
     }
 
     fun chooseSubtitle(s: PlexStream?) {
@@ -531,7 +598,7 @@ class PlayerController(
         saveProgress()
         val subLang = plan.subtitle?.languageCode
         scope.launch {
-            val full = next.ratingKey?.let { runCatching { plex.metadata(it) }.getOrNull() } ?: next
+            val full = next.ratingKey?.let { plex.fullItem(it) } ?: next
             item = full
             upNext = null
             upNextDismissed = false

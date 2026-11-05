@@ -1,7 +1,9 @@
 package app.plexhdr.shield.ui
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,11 +51,18 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
     var recent by remember { mutableStateOf<List<Pair<PlexSection, List<PlexItem>>>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(sections) {
-        onDeck = runCatching { App.plex.onDeck() }.getOrDefault(emptyList())
-        recent = coroutineScope {
-            sections.map { s -> async { s to runCatching { App.plex.recentlyAdded(s.id, 24) }.getOrDefault(emptyList()) } }.awaitAll()
+        // Retry until something comes back (server asleep, Wi-Fi not up yet after the Shield wakes).
+        var wait = 1000L
+        while (true) {
+            val deck = runCatching { App.plex.onDeck() }
+            onDeck = deck.getOrDefault(emptyList())
+            recent = coroutineScope {
+                sections.map { s -> async { s to runCatching { App.plex.recentlyAdded(s.id, 24) }.getOrDefault(emptyList()) } }.awaitAll()
+            }
+            loaded = true
+            if (deck.isSuccess && (sections.isEmpty() || recent.any { it.second.isNotEmpty() } || onDeck.isNotEmpty())) break
+            delay(wait); wait = (wait * 2).coerceAtMost(15_000)
         }
-        loaded = true
     }
     // The top shelf: what you're watching, then the newest movies and shows.
     val featured = remember(onDeck, recent) {
@@ -61,7 +73,11 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
     var focusedItem by remember { mutableStateOf<PlexItem?>(null) }
     var heroFocused by remember { mutableStateOf(true) }
     val hero = featured.getOrNull(heroIndex)
-    val bgItem = if (heroFocused) hero else focusedItem ?: hero
+    val wanted = if (heroFocused) hero else focusedItem ?: hero
+    // Change the full-screen backdrop only once focus rests, not on every card passed while scrolling a row:
+    // loading a 4K backdrop per key press made the UI stutter.
+    var bgItem by remember { mutableStateOf(wanted) }
+    LaunchedEffect(wanted) { delay(350); bgItem = wanted }
     val art by rememberArtwork(bgItem)
 
     LaunchedEffect(featured.size, heroIndex, heroFocused) {
@@ -70,12 +86,15 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
         heroIndex = (heroIndex + 1) % featured.size
     }
 
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         Crossfade(backdropUrl(bgItem, art), animationSpec = tween(700), label = "home-bg") { Backdrop(it) }
         if (!loaded) { Loading(); return@Box }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = list) {
             if (hero != null) item(key = "hero") {
-                Hero(nav, hero, onFocus = { heroFocused = true },
+                // Back on the hero buttons: show the whole hero again, not a version scrolled under the top bar.
+                Hero(nav, hero, active = heroFocused, onFocus = { heroFocused = true; scope.launch { list.animateScrollToItem(0) } },
                     prev = { heroIndex = (heroIndex - 1 + featured.size) % featured.size },
                     next = { heroIndex = (heroIndex + 1) % featured.size })
             }
@@ -93,13 +112,17 @@ fun HomeScreen(nav: Nav, sections: List<PlexSection>) {
 }
 
 @Composable
-private fun Hero(nav: Nav, item: PlexItem, onFocus: () -> Unit, prev: () -> Unit, next: () -> Unit) {
+private fun Hero(nav: Nav, item: PlexItem, active: Boolean, onFocus: () -> Unit, prev: () -> Unit, next: () -> Unit) {
     val art by rememberArtwork(item)
     val ratings by rememberRatings(item)
     val play = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
+    val heroAlpha by animateFloatAsState(if (active) 1f else 0f, label = "hero-alpha")
     Column(
-        Modifier.fillMaxWidth().heightIn(min = 640.dp).padding(start = D.gutter, top = 150.dp, end = D.gutter, bottom = 30.dp),
+        // Like Apple TV: once focus moves down to the rows, the hero's title and buttons fade out (the backdrop then
+        // follows the focused card), so nothing is left half-hidden under the top bar.
+        Modifier.fillMaxWidth().heightIn(min = 600.dp).graphicsLayer { alpha = heroAlpha }
+            .padding(start = D.gutter, top = 120.dp, end = D.gutter, bottom = 24.dp),
     ) {
         val logo = logoUrl(item, art)
         if (logo != null) Img(logo, Modifier.height(130.dp).width(460.dp), ContentScale.Fit)

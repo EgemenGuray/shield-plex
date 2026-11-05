@@ -23,6 +23,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -103,7 +107,19 @@ private fun Main(iptvOnly: Boolean = false) {
     val home = if (iptvOnly) Screen.Iptv else Screen.Home
     val nav = remember { Nav(home) }
     var sections by remember { mutableStateOf<List<PlexSection>>(emptyList()) }
-    LaunchedEffect(Unit) { if (!iptvOnly) sections = runCatching { App.plex.sections().filter { it.isVideo } }.getOrDefault(emptyList()) }
+    // Keep trying until the server answers: the Shield wakes from sleep before Wi-Fi and the server are reachable,
+    // and a single failed call used to leave Home empty until the app was restarted.
+    var resumes by remember { mutableStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { resumes++ }
+    LaunchedEffect(resumes) {
+        if (iptvOnly) return@LaunchedEffect
+        var wait = 1000L
+        while (true) {
+            val got = runCatching { App.plex.sections().filter { it.isVideo } }.getOrNull()
+            if (got != null) { if (got != sections) sections = got; break }
+            delay(wait); wait = (wait * 2).coerceAtMost(15_000)
+        }
+    }
 
     BackHandler(enabled = nav.stack.size > 1 || nav.top != home) {
         if (nav.stack.size > 1) nav.pop() else nav.tab(home)
@@ -148,10 +164,14 @@ private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean) {
             .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
             .padding(horizontal = D.gutter, vertical = 18.dp),
     ) {
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.align(Alignment.CenterStart)) {
+        // Coming up into the bar lands on the current tab, not on whichever tab was focused last.
+        val current = remember { FocusRequester() }
+        var inBar by remember { mutableStateOf(false) }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.align(Alignment.CenterStart)
+            .onFocusChanged { if (it.hasFocus && !inBar) runCatching { current.requestFocus() }; inBar = it.hasFocus }) {
             items(tabs, key = { it.first + it.second.hashCode() }) { (label, screen) ->
                 val selected = nav.top == screen
-                Pill(label, { nav.tab(screen) }, selected = selected)
+                Pill(label, { nav.tab(screen) }, selected = selected, focusRequester = if (selected) current else null)
             }
             // Without Plex, its tab leads to signing in.
             if (iptvOnly) item(key = "plex") { Pill("Plex", { App.settings.iptvOnly = false }) }
