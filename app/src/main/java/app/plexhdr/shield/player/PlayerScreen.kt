@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,11 +28,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,6 +79,7 @@ import app.plexhdr.shield.ui.plexImage
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -103,7 +109,8 @@ fun PlayerScreen(item: PlexItem, startMs: Long?, mediaIndex: Int?, audioId: Int?
         Modifier.fillMaxSize().background(Color.Black)
             .focusRequester(rootFocus)
             .onPreviewKeyEvent { e ->
-                if (pc.panel != null || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // The error card has its own buttons; let Select and ◀ ▶ reach them.
+                if (pc.panel != null || pc.error != null || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (e.key) {
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                         when {
@@ -120,14 +127,14 @@ fun PlayerScreen(item: PlexItem, startMs: Long?, mediaIndex: Int?, audioId: Int?
                         else pc.skip(if (dir < 0) -s.skipBack * 1000L else s.skipForward * 1000L)
                         true
                     }
-                    Key.DirectionDown -> { pc.panel = PlayerController.Panel.Info; pc.showOverlay(false); true }
+                    Key.DirectionDown -> { pc.panel = PlayerController.Panel.AudioSubs; pc.showOverlay(false); true }
                     Key.DirectionUp -> { pc.showOverlay(autoHide = true); true }
                     Key.MediaPlayPause -> { pc.togglePlay(); true }
                     Key.MediaPlay -> { pc.play(); pc.hideOverlaySoon(); true }
                     Key.MediaPause -> { pc.pause(); true }
                     Key.MediaFastForward, Key.MediaNext -> { pc.jumpChapter(1); true }
                     Key.MediaRewind, Key.MediaPrevious -> { pc.jumpChapter(-1); true }
-                    Key.Menu, Key.Info -> { pc.panel = PlayerController.Panel.Info; true }
+                    Key.Menu, Key.Info -> { pc.panel = PlayerController.Panel.AudioSubs; pc.showOverlay(false); true }
                     Key.Back, Key.Escape -> false   // straight to the back handler; showing the controls first cost an extra press
                     else -> { pc.showOverlay(autoHide = true); false }
                 }
@@ -193,21 +200,7 @@ fun PlayerScreen(item: PlexItem, startMs: Long?, mediaIndex: Int?, audioId: Int?
 
         pc.panel?.let { Panel(pc, it, Modifier.align(Alignment.BottomCenter)) }
 
-        pc.error?.let { err ->
-            Column(Modifier.align(Alignment.Center).clip(RoundedCornerShape(16.dp)).background(C.surface).padding(30.dp)) {
-                T("Couldn't play this", size = 24.sp, weight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                T(err, Modifier.width(640.dp), size = 15.sp, color = C.dim)
-                Spacer(Modifier.height(10.dp))
-                T(pc.plan.note, Modifier.width(640.dp), size = 13.sp, color = C.faint)
-                Spacer(Modifier.height(18.dp))
-                val fr = remember { FocusRequester() }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Pill("Close", { pc.close() }, focusRequester = fr)
-                }
-                LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
-            }
-        }
+        pc.error?.let { err -> ErrorCard(pc, err, Modifier.align(Alignment.Center)) }
     }
 }
 
@@ -225,7 +218,7 @@ private fun Overlay(pc: PlayerController) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Decide.badges(pc.plan).forEach { Badge(it) } }
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 60.dp, vertical = 44.dp)) {
-            val shown = pc.scrubMs ?: pc.timeMs
+            val shown = pc.scrubMs ?: pc.skipTargetMs ?: pc.timeMs
             pc.scrubMs?.let { scrub ->
                 pc.bif?.image(scrub)?.let { bmp ->
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -235,6 +228,19 @@ private fun Overlay(pc: PlayerController) {
                     }
                     Spacer(Modifier.height(10.dp))
                 }
+            }
+            pc.skipTargetMs?.let { target ->
+                // "+90 s · 1:02:30" over the point the accumulated presses will land on.
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val frac = if (pc.durationMs > 0) (target.toFloat() / pc.durationMs).coerceIn(0f, 1f) else 0f
+                    val x = (maxWidth - 180.dp) * frac
+                    Box(Modifier.offset(x = x).width(180.dp), contentAlignment = Alignment.Center) {
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(Color(0xE6000000)).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                            T("${skipLabel(pc.skipDeltaMs)} · ${formatTime(target)}", size = 16.sp, weight = FontWeight.SemiBold, maxLines = 1)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
             }
             pc.currentChapter?.let { T(it.title, size = 15.sp, color = C.dim) }
             Spacer(Modifier.height(8.dp))
@@ -274,7 +280,7 @@ private fun Timeline(pc: PlayerController, shown: Long) {
         pc.chapters.drop(1).forEach { c ->
             Box(Modifier.offset(x = w * (c.startMs.toFloat() / d)).width(2.dp).fillMaxHeight().align(Alignment.CenterStart).background(Color(0xAA000000)))
         }
-        if (pc.scrubMs != null) {
+        if (pc.scrubMs != null || pc.skipTargetMs != null) {
             Box(Modifier.offset(x = w * (shown.toFloat() / d) - 2.dp).width(4.dp).fillMaxHeight().align(Alignment.CenterStart).background(C.accent))
         }
     }
@@ -296,8 +302,24 @@ private fun UpNextCard(pc: PlayerController, next: PlexItem, modifier: Modifier)
 
 @Composable
 private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier: Modifier) {
-    val first = remember(panel) { FocusRequester() }
-    LaunchedEffect(panel) { runCatching { first.requestFocus() } }
+    val tabFocus = remember(panel) { FocusRequester() }
+    val trackFocus = remember { FocusRequester() }
+    // Opening the panel puts focus on the audio track that is playing; moving between tabs keeps it on the tab row.
+    var opened by remember { mutableStateOf(false) }
+    var trackFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(panel) {
+        if (!opened && panel == PlayerController.Panel.AudioSubs) {
+            opened = true
+            // The list item is composed during the first layout pass; try for a few frames before falling back.
+            repeat(8) {
+                runCatching { trackFocus.requestFocus() }
+                delay(40)
+                if (trackFocused) return@LaunchedEffect
+            }
+        }
+        opened = true
+        runCatching { tabFocus.requestFocus() }
+    }
     Column(modifier.fillMaxWidth()
         // Back closes the panel and the controls in one press. Without this, Compose spent the first Back moving
         // focus out of the tab row and the second on the controls, so leaving the player took three.
@@ -309,16 +331,16 @@ private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier:
         .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xF2000000), Color(0xF2000000))))
         .padding(start = 60.dp, end = 60.dp, top = 40.dp, bottom = 36.dp)) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Version only when the title has more than one file.
-            val tabs = PlayerController.Panel.values().filter { it != PlayerController.Panel.Version || pc.item.media.size > 1 }
+            val tabs = PlayerController.Panel.values()
             items(tabs.size) { i ->
                 val p = tabs[i]
-                Pill(p.title, { pc.panel = p }, selected = p == panel, onFocused = { pc.panel = p }, focusRequester = if (p == panel) first else null)
+                Pill(p.title, { pc.panel = p }, selected = p == panel, onFocused = { pc.panel = p }, focusRequester = if (p == panel) tabFocus else null)
             }
         }
         Spacer(Modifier.height(18.dp))
-        Box(Modifier.height(260.dp)) {
+        Box(Modifier.height(if (panel == PlayerController.Panel.AudioSubs) 380.dp else 260.dp)) {
             when (panel) {
+                PlayerController.Panel.AudioSubs -> AudioSubsTab(pc, trackFocus) { trackFocused = true }
                 PlayerController.Panel.Info -> InfoTab(pc)
                 PlayerController.Panel.Chapters -> {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
@@ -328,22 +350,6 @@ private fun Panel(pc: PlayerController, panel: PlayerController.Panel, modifier:
                         }
                     }
                     if (pc.chapters.isEmpty()) T("This file has no chapters.", color = C.dim)
-                }
-                PlayerController.Panel.Audio -> {
-                    val streams = pc.plan.part?.audioStreams ?: emptyList()
-                    val names = Decide.trackLabels(streams)
-                    OptionList(streams.mapIndexed { n, a ->
-                        Choice(names[n], Decide.bitstreamKey(a)?.let { k ->
-                            if (App.settings.audioOutput == Settings.AudioOutput.Passthrough && (k in pc.caps.bitstream || (k == "eac3joc" && "eac3" in pc.caps.bitstream))) "Bitstream" else "Decoded to PCM"
-                        }, a.id == pc.plan.audio?.id)
-                    }) { i -> pc.chooseAudio(streams[i]) }
-                }
-                PlayerController.Panel.Subtitles -> SubtitlesTab(pc)
-                PlayerController.Panel.Version -> {
-                    val media = pc.item.media
-                    OptionList(media.mapIndexed { i, m -> Choice(m.label, m.part?.file?.substringAfterLast('/'), i == pc.plan.mediaIndex) }) { i ->
-                        if (i != pc.plan.mediaIndex) { pc.panel = null; pc.chooseVersion(i) }
-                    }
                 }
                 PlayerController.Panel.Picture -> {
                     val fits = PlayerController.Fit.values()
@@ -372,6 +378,160 @@ private fun OptionList(choices: List<Choice>, onPick: (Int) -> Unit) {
     }
 }
 
+/**
+ * Apple TV / Infuse style: audio on the left, subtitles on the right (and the file version in a third column when
+ * there is more than one), each a vertical list.
+ */
+@Composable
+private fun AudioSubsTab(pc: PlayerController, trackFocus: FocusRequester, onTrackFocused: () -> Unit) {
+    val audios = pc.plan.part?.audioStreams ?: emptyList()
+    val subs = pc.plan.part?.subtitleStreams ?: emptyList()
+    val media = pc.item.media
+    val settings = App.settings
+    val audioNames = Decide.audioNames(audios) { a -> !pc.pcmFallback && Decide.goesBitstream(a, settings, pc.caps) }
+    val subNames = Decide.subtitleNames(subs)
+    val selectedAudio = audios.indexOfFirst { it.id == pc.plan.audio?.id }.coerceAtLeast(0)
+
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+        // Audio
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            ColumnHeader("Audio")
+            val state = rememberLazyListState(initialFirstVisibleItemIndex = selectedAudio)
+            LazyColumn(Modifier.fillMaxSize(), state = state, verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
+                if (audios.isEmpty()) item { T("No audio tracks listed for this file.", size = 14.sp, color = C.dim) }
+                items(audios.size) { i ->
+                    val a = audios[i]
+                    val n = audioNames[i]
+                    TrackRow(n.title, n.detail, n.tags, a.id == pc.plan.audio?.id, { pc.chooseAudio(a) },
+                        focusRequester = if (i == selectedAudio) trackFocus else null, onFocused = if (i == selectedAudio) onTrackFocused else ({}))
+                }
+            }
+        }
+        // Subtitles
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            ColumnHeader("Subtitles")
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
+                item {
+                    TrackRow("Off", null, emptyList(), pc.plan.subtitle == null && pc.onlineSubtitle == null, { pc.chooseSubtitle(null) },
+                        focusRequester = if (audios.isEmpty()) trackFocus else null, onFocused = if (audios.isEmpty()) onTrackFocused else ({}))
+                }
+                items(subs.size) { i ->
+                    val s = subs[i]
+                    val n = subNames[i]
+                    TrackRow(n.title, n.detail, n.tags, s.id == pc.plan.subtitle?.id && pc.onlineSubtitle == null, { pc.chooseSubtitle(s) })
+                }
+                pc.onlineSubtitle?.let { name -> item { TrackRow("Downloaded subtitle", name, emptyList(), true, {}) } }
+                item { TrackRow("Search online…", "OpenSubtitles (file hash first) and your server", emptyList(), false, { pc.searchOnline() }) }
+                item { DelayRow(pc) }
+                pc.onlineStatus?.let { st -> item { T(st, Modifier.padding(horizontal = 16.dp, vertical = 6.dp), size = 14.sp, color = C.dim) } }
+                items(pc.onlineResults.size) { i ->
+                    val r = pc.onlineResults[i]
+                    TrackRow("${r.language.uppercase()} · ${r.title}", listOfNotNull(
+                        if (r.hashMatch) "Matches this file" else null, if (r.source == "plex") "via Plex" else "${r.downloads} downloads",
+                        if (r.machineTranslated) "machine translated" else null,
+                    ).joinToString(" · "), if (r.hearingImpaired) listOf("SDH") else emptyList(), false, { pc.pickOnline(r) })
+                }
+            }
+        }
+        // Version, only when the title has more than one file.
+        if (media.size > 1) {
+            Column(Modifier.weight(0.8f).fillMaxHeight()) {
+                ColumnHeader("Version")
+                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
+                    items(media.size) { i ->
+                        val m = media[i]
+                        TrackRow(m.label, m.part?.file?.substringAfterLast('/'), emptyList(), i == pc.plan.mediaIndex, {
+                            if (i != pc.plan.mediaIndex) { pc.panel = null; pc.chooseVersion(i) }
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColumnHeader(text: String) {
+    T(text.uppercase(), Modifier.padding(start = 16.dp, bottom = 4.dp), size = 13.sp, color = C.faint, weight = FontWeight.SemiBold)
+}
+
+@Composable
+private fun TrackRow(
+    title: String, detail: String?, tags: List<String>, selected: Boolean, onClick: () -> Unit,
+    modifier: Modifier = Modifier, focusRequester: FocusRequester? = null, trailing: String? = null, onFocused: () -> Unit = {},
+) {
+    Focusable(onClick, modifier.fillMaxWidth(), RoundedCornerShape(10.dp), 1.02f, focusRequester, onFocused, showBorder = false) { f ->
+        Row(Modifier.fillMaxWidth().background(if (f) C.focus else Color.Transparent).padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(24.dp)) { if (selected) T("✓", size = 16.sp, color = if (f) Color.Black else C.accent, weight = FontWeight.Bold) }
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    T(title, Modifier.weight(1f, fill = false), size = 16.sp, color = if (f) Color.Black else C.text, maxLines = 1, weight = FontWeight.SemiBold)
+                    tags.forEach { tag ->
+                        Spacer(Modifier.width(6.dp))
+                        Box(Modifier.border(1.dp, if (f) Color.DarkGray else C.dim, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                            T(tag, size = 11.sp, color = if (f) Color.DarkGray else C.dim, weight = FontWeight.SemiBold, maxLines = 1)
+                        }
+                    }
+                }
+                detail?.takeIf { it.isNotEmpty() }?.let { T(it, size = 12.sp, color = if (f) Color.DarkGray else C.dim, maxLines = 1) }
+            }
+            trailing?.let { T(it, size = 16.sp, color = if (f) Color.Black else C.text, weight = FontWeight.SemiBold, maxLines = 1) }
+        }
+    }
+}
+
+/** "Subtitle delay  ◀ +0.3 s ▶": ◀ ▶ change it in 0.1 s steps, faster while held; Select resets it. */
+@Composable
+private fun DelayRow(pc: PlayerController) {
+    val d = pc.subtitleDelayMs
+    val value = (if (d > 0) "+" else if (d < 0) "−" else "") + String.format(Locale.US, "%.1f s", kotlin.math.abs(d) / 1000.0)
+    val external = pc.onlineSubtitle != null || pc.plan.subtitle?.isExternal == true
+    TrackRow("Subtitle delay", if (external) "◀ ▶ to adjust · Select resets" else "◀ ▶ to adjust · embedded tracks can only be delayed",
+        emptyList(), false, { pc.resetSubtitleDelay() },
+        modifier = Modifier.onPreviewKeyEvent { e ->
+            if (e.key != Key.DirectionLeft && e.key != Key.DirectionRight) return@onPreviewKeyEvent false
+            if (e.type == KeyEventType.KeyDown) {
+                val held = e.nativeKeyEvent.repeatCount
+                val step = when {
+                    held >= 25 -> 500L
+                    held >= 10 -> 200L
+                    else -> 100L
+                }
+                pc.adjustSubtitleDelay(if (e.key == Key.DirectionLeft) -step else step)
+            }
+            true   // keep focus on the row instead of jumping to the audio column
+        },
+        trailing = "◀  $value  ▶")
+}
+
+private fun skipLabel(deltaMs: Long): String {
+    val sec = deltaMs / 1000
+    return (if (sec >= 0) "+" else "−") + "${kotlin.math.abs(sec)} s"
+}
+
+@Composable
+private fun ErrorCard(pc: PlayerController, message: String, modifier: Modifier) {
+    Column(modifier.clip(RoundedCornerShape(16.dp)).background(C.surface).padding(30.dp)) {
+        T("Couldn't play this", size = 24.sp, weight = FontWeight.Bold)
+        Spacer(Modifier.height(10.dp))
+        T(message, Modifier.width(640.dp), size = 16.sp, color = C.dim)
+        pc.errorDetail?.let {
+            Spacer(Modifier.height(8.dp))
+            T(it, Modifier.width(640.dp), size = 12.sp, color = C.faint, maxLines = 4)
+        }
+        Spacer(Modifier.height(20.dp))
+        val fr = remember { FocusRequester() }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Pill("Try Again", { pc.retryPlayback() }, focusRequester = fr)
+            if (pc.canDecodeAudio) Pill("Decode audio on Shield", { pc.retryWithDecodedAudio() })
+            if (pc.hasOtherVersion) Pill("Other version", { pc.tryOtherVersion() })
+            Pill("Close", { pc.close() })
+        }
+        LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
+    }
+}
+
 @Composable
 private fun InfoTab(pc: PlayerController) {
     LazyColumn {
@@ -385,38 +545,6 @@ private fun InfoTab(pc: PlayerController) {
             T("Engine: ${if (pc.plan.engine == Decide.Engine.Direct) "Direct play (original file)" else "Server converts the video to 4K, audio copied"}", size = 14.sp, color = C.dim)
             T("Shield bitstream formats: ${pc.caps.bitstream.sorted().joinToString(", ").ifEmpty { "none reported" }}", size = 14.sp, color = C.dim)
             if (pc.pcmFallback) T("Passthrough failed for this title; audio is decoded on the Shield.", size = 14.sp, color = C.warn)
-        }
-    }
-}
-
-@Composable
-private fun SubtitlesTab(pc: PlayerController) {
-    val subs = pc.plan.part?.subtitleStreams ?: emptyList()
-    Column {
-        val base = listOf(Choice("Off", null, pc.plan.subtitle == null && pc.onlineSubtitle == null)) +
-            Decide.trackLabels(subs).let { names -> subs.mapIndexed { n, it -> Choice(names[n], if (it.isExternal) "External" else if (Decide.isImageSub(it)) "Embedded image (PGS)" else "Embedded", it.id == pc.plan.subtitle?.id) } } +
-            (pc.onlineSubtitle?.let { listOf(Choice("Downloaded subtitle", it, true)) } ?: emptyList()) +
-            listOf(Choice("Search online…", "OpenSubtitles (file hash first) and your server", false),
-                Choice("Delay −0.1 s", "Now ${pc.subtitleDelayMs / 1000.0} s", false), Choice("Delay +0.1 s", "Embedded tracks: only positive delays", false))
-        OptionList(base) { i ->
-            val extraStart = 1 + subs.size + (if (pc.onlineSubtitle != null) 1 else 0)
-            when {
-                i == 0 -> pc.chooseSubtitle(null)
-                i <= subs.size -> pc.chooseSubtitle(subs[i - 1])
-                i < extraStart -> {}
-                i == extraStart -> pc.searchOnline()
-                i == extraStart + 1 -> pc.adjustSubtitleDelay(-100)
-                else -> pc.adjustSubtitleDelay(100)
-            }
-        }
-        pc.onlineStatus?.let { T(it, size = 14.sp, color = C.dim) }
-        if (pc.onlineResults.isNotEmpty()) {
-            OptionList(pc.onlineResults.map {
-                Choice("${it.language.uppercase()} · ${it.title}", listOfNotNull(
-                    if (it.hashMatch) "Matches this file" else null, if (it.source == "plex") "via Plex" else "${it.downloads} downloads",
-                    if (it.hearingImpaired) "SDH" else null, if (it.machineTranslated) "machine translated" else null,
-                ).joinToString(" · "))
-            }) { i -> pc.pickOnline(pc.onlineResults[i]) }
         }
     }
 }
