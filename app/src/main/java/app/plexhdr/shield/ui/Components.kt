@@ -219,8 +219,8 @@ fun <E> Shelf(
 /** [continueWatching]: the cards' menu also offers "Remove from Continue Watching". */
 @Composable
 fun ItemShelf(
-    title: String, items: List<PlexItem>, open: (PlexItem) -> Unit, wide: Boolean = false, onFocused: (PlexItem) -> Unit = {},
-    continueWatching: Boolean = false,
+    title: String, items: List<PlexItem>, open: (PlexItem) -> Unit, wide: Boolean = false, continueWatching: Boolean = false,
+    onFocused: (PlexItem) -> Unit = {},
 ) {
     Shelf(title, items, { it.id }) { item ->
         val options = { CardMenu.show(item, continueWatching) }
