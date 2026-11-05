@@ -64,6 +64,8 @@ dependencies {
     implementation("androidx.media3:media3-ui:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-datasource-okhttp:$media3")
+    // MediaSession: Google Assistant, the Google TV remote app and HDMI-CEC media keys.
+    implementation("androidx.media3:media3-session:$media3")
     // FFmpeg audio decoders (TrueHD, DTS, DTS-HD MA, AC3, E-AC3...) for when a format can't be bitstreamed.
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:$media3+1")
 

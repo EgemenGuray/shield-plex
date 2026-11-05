@@ -58,6 +58,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.session.MediaSession
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
@@ -138,6 +139,8 @@ class IptvPlayerController(private val activity: Activity, initial: IptvPlay, pr
     private var overlayJob: Job? = null
     private var digitJob: Job? = null
     private var lastSave = 0L
+    /** Lets Google Assistant, the Google TV remote app and HDMI-CEC media keys control playback. */
+    private var session: MediaSession? = null
 
     val player: ExoPlayer = run {
         val http = store.http.newBuilder().addInterceptor { chain ->
@@ -165,6 +168,8 @@ class IptvPlayerController(private val activity: Activity, initial: IptvPlay, pr
 
     fun start() {
         player.addListener(listener)
+        session = runCatching { MediaSession.Builder(activity, player).setId("lumen-iptv-" + System.nanoTime()).build() }
+            .onFailure { android.util.Log.w("Lumen", "MediaSession failed", it) }.getOrNull()
         load()
         showOverlay()
         scope.launch {
@@ -317,6 +322,8 @@ class IptvPlayerController(private val activity: Activity, initial: IptvPlay, pr
     fun release() {
         savePosition()
         scope.cancel()
+        session?.release()
+        session = null
         player.removeListener(listener)
         player.release()
     }
