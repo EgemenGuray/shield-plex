@@ -25,6 +25,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.currentCompositeKeyHash
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,14 +84,23 @@ fun Focusable(
 ) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) focusedScale else 1f, label = "focus-scale")
+    // The page remembers which element had focus (by its place in the composition) to put focus back there on return.
+    val entry = LocalNavEntry.current
+    val place = currentCompositeKeyHash
+    val requester = focusRequester ?: remember { FocusRequester() }
+    if (entry != null) DisposableEffect(entry, place, requester) {
+        entry.requesters[place] = requester
+        onDispose { if (entry.requesters[place] === requester) entry.requesters.remove(place); entry.unfocused(place) }
+    }
     Box(
         modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .shadow(if (focused) 20.dp else 0.dp, shape)
             .clip(shape)
-            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .focusRequester(requester)
             .onFocusChanged {
                 if (it.isFocused && !focused) onFocused()
+                if (it.isFocused) entry?.focused(place) else if (focused) entry?.unfocused(place)
                 focused = it.isFocused
             }
             .combinedClickable(

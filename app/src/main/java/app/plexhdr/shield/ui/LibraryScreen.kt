@@ -45,14 +45,16 @@ private val sorts = listOf(
 fun LibraryScreen(nav: Nav, section: PlexSection) {
     val plex = App.plex
     val scope = rememberCoroutineScope()
-    var sort by remember { mutableStateOf(sorts[0].first) }
-    var unwatched by remember { mutableStateOf(false) }
-    var genre by remember { mutableStateOf<PlexClient.Genre?>(null) }
-    var genres by remember { mutableStateOf<List<PlexClient.Genre>>(emptyList()) }
-    var showCollections by remember { mutableStateOf(false) }
+    // Retained: back from a title, the grid is there at once, at the same place.
+    var sort by retain("sort") { mutableStateOf(sorts[0].first) }
+    var unwatched by retain("unwatched") { mutableStateOf(false) }
+    var genre by retain("genre") { mutableStateOf<PlexClient.Genre?>(null) }
+    var genres by retain("genres") { mutableStateOf<List<PlexClient.Genre>>(emptyList()) }
+    var showCollections by retain("collections") { mutableStateOf(false) }
     var menu by remember { mutableStateOf<String?>(null) }   // "sort" | "genre"
-    val items = remember { mutableStateListOf<PlexItem>() }
-    var total by remember { mutableStateOf(0) }
+    val items = retain("items") { mutableStateListOf<PlexItem>() }
+    var total by retain("total") { mutableStateOf(0) }
+    var loadedFor by retain("loadedFor") { mutableStateOf<List<Any?>?>(null) }
     var loading by remember { mutableStateOf(false) }
 
     suspend fun load(reset: Boolean) {
@@ -70,7 +72,16 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
         loading = false
     }
 
-    LaunchedEffect(sort, unwatched, genre, showCollections) { load(true) }
+    LaunchedEffect(sort, unwatched, genre, showCollections) {
+        val query = listOf(sort, unwatched, genre?.key, showCollections)
+        if (loadedFor != query || items.isEmpty()) { loadedFor = query; load(true); return@LaunchedEffect }
+        // Coming back: refresh what's loaded in place (watched marks, progress) without moving the grid.
+        if (showCollections || unwatched) return@LaunchedEffect
+        runCatching {
+            val (list, _) = plex.sectionItems(section.id, PlexClient.ItemQuery(sort = sort, unwatched = false, genre = genre?.key, start = 0, size = items.size))
+            if (list.size == items.size && list.indices.all { list[it].id == items[it].id }) list.forEachIndexed { i, x -> items[i] = x }
+        }
+    }
     LaunchedEffect(section.id) { genres = runCatching { plex.genres(section.id) }.getOrDefault(emptyList()) }
 
     Column(Modifier.fillMaxSize().padding(top = 90.dp)) {
