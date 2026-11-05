@@ -149,6 +149,7 @@ private fun Main(iptvOnly: Boolean = false) {
         }
         if (isTab) TabBar(nav, sections, iptvOnly)
         if (top !is Screen.Player && top !is Screen.IptvPlayer) IptvReminder(nav)
+        GlobalHosts(nav)   // card menu, lumen:// deep links, Play Next updates (ui/GlobalHosts.kt)
     }
 }
 

@@ -47,6 +47,7 @@ import app.plexhdr.shield.App
 import app.plexhdr.shield.player.Engine
 import app.plexhdr.shield.plex.PlexClient
 import app.plexhdr.shield.services.Settings
+import app.plexhdr.shield.services.SettingsImport
 import kotlinx.coroutines.launch
 
 private sealed interface Row_ {
@@ -176,6 +177,18 @@ fun SettingsScreen(nav: Nav) {
         key("OpenSubtitles password", s.openSubtitlesPassword, true) { s.openSubtitlesPassword = it }
         add(Row_.Item("Artwork from TMDB", onOff(s.tmdbArtwork), null) { s.tmdbArtwork = !s.tmdbArtwork })
         add(Row_.Item("Show ratings", onOff(s.showRatings), "IMDb, Letterboxd, Rotten Tomatoes, Metacritic") { s.showRatings = !s.showRatings })
+
+        add(Row_.Header("Backup"))
+        add(Row_.Item("Import settings from address", "", "Keys, languages, subtitles, Live TV playlists and favourites from a JSON file (see README)") {
+            input = Input("Import settings from address", SettingsImport.lastUrl) { url ->
+                status = "Importing…"
+                scope.launch {
+                    runCatching { SettingsImport.run(url.trim()) }
+                        .onSuccess { lines -> status = null; sheet = listOf("Imported" to "") + lines }
+                        .onFailure { status = "Import failed: ${it.message}" }
+                }
+            }
+        })
 
         add(Row_.Header("Remote"))
         add(Row_.Item("Player keys", "", null) {

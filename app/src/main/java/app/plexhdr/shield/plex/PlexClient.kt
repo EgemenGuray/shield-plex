@@ -249,6 +249,16 @@ class PlexClient(context: Context) {
             Genre(k, it.optString("title"))
         }
 
+    /** One entry per first letter of the titles (in title-sort order), with how many items start with it. */
+    data class FirstCharacter(val key: String, val title: String, val size: Int)
+
+    suspend fun firstCharacters(sectionId: String, unwatched: Boolean = false, genre: String? = null): List<FirstCharacter> =
+        api("/library/sections/$sectionId/firstCharacter", mapOf("unwatched" to if (unwatched) 1 else null, "genre" to genre))
+            .optJSONArray("Directory").objects().mapNotNull {
+                val title = it.strOrNull("title") ?: return@mapNotNull null
+                FirstCharacter(it.strOrNull("key") ?: title, title, it.optInt("size", 0))
+            }
+
     suspend fun collections(sectionId: String) = items(api("/library/sections/$sectionId/collections"))
     suspend fun collectionItems(ratingKey: String) = items(api("/library/collections/$ratingKey/children"))
     suspend fun onDeck() = items(api("/library/onDeck", mapOf("includeGuids" to 1)))
@@ -305,6 +315,12 @@ class PlexClient(context: Context) {
         runCatching {
             request("GET", url(s.uri, if (watched) "/:/scrobble" else "/:/unscrobble", mapOf("key" to rk, "identifier" to "com.plexapp.plugins.library")), s.token)
         }
+    }
+
+    /** Hides the item from Continue Watching / On Deck on the server (like Plex's own "Remove from Continue Watching"). */
+    suspend fun removeFromContinueWatching(ratingKey: String) {
+        val s = server ?: throw PlexException("No Plex server selected")
+        request("PUT", url(s.uri, "/actions/removeFromContinueWatching", mapOf("ratingKey" to ratingKey)), s.token)
     }
 
     /** Next episode after this one: the next in its season, else the first episode of the next season. */

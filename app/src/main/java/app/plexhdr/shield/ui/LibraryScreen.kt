@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -23,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,6 +32,7 @@ import app.plexhdr.shield.App
 import app.plexhdr.shield.plex.PlexClient
 import app.plexhdr.shield.plex.PlexItem
 import app.plexhdr.shield.plex.PlexSection
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val sorts = listOf(
@@ -54,8 +57,12 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
     val items = remember { mutableStateListOf<PlexItem>() }
     var total by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(false) }
+    var letters by remember { mutableStateOf<List<PlexClient.FirstCharacter>>(emptyList()) }
+    val grid = rememberLazyGridState()
+    val jumpFocus = remember { FocusRequester() }
+    var jumpIndex by remember { mutableStateOf(-1) }
 
-    suspend fun load(reset: Boolean) {
+    suspend fun load(reset: Boolean, size: Int = 100) {
         if (loading) return
         loading = true
         if (reset) { items.clear(); total = 0 }
@@ -63,15 +70,49 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
             if (showCollections) {
                 items.addAll(plex.collections(section.id)); total = items.size
             } else {
-                val (list, t) = plex.sectionItems(section.id, PlexClient.ItemQuery(sort = sort, unwatched = unwatched, genre = genre?.key, start = items.size, size = 100))
+                val (list, t) = plex.sectionItems(section.id, PlexClient.ItemQuery(sort = sort, unwatched = unwatched, genre = genre?.key, start = items.size, size = size))
                 items.addAll(list); total = t
             }
         }
         loading = false
     }
 
-    LaunchedEffect(sort, unwatched, genre, showCollections) { load(true) }
+    val byTitle = sort == "titleSort" && !showCollections
+    LaunchedEffect(sort, unwatched, genre, showCollections) { jumpIndex = -1; load(true) }
     LaunchedEffect(section.id) { genres = runCatching { plex.genres(section.id) }.getOrDefault(emptyList()) }
+    LaunchedEffect(byTitle, unwatched, genre) {
+        letters = if (!byTitle) emptyList()
+        else runCatching { plex.firstCharacters(section.id, unwatched, genre?.key) }.getOrDefault(emptyList())
+    }
+    // The card menu changed an item (watched state): refresh just that item, keeping the grid where it is.
+    val seenChanges = remember { CardMenu.changes }
+    LaunchedEffect(CardMenu.changes) {
+        if (CardMenu.changes == seenChanges) return@LaunchedEffect
+        val rk = CardMenu.lastChangedKey ?: return@LaunchedEffect
+        val i = items.indexOfFirst { it.ratingKey == rk }
+        if (i < 0) return@LaunchedEffect
+        runCatching { plex.metadata(rk) }.getOrNull()?.let { fresh -> if (i < items.size && items[i].ratingKey == rk) items[i] = fresh }
+    }
+
+    /** Loads up to the first item of [letter] (counts from Plex's firstCharacter list), then scrolls to it and focuses it. */
+    suspend fun jumpTo(letter: PlexClient.FirstCharacter) {
+        val pos = letters.indexOf(letter)
+        if (pos < 0) return
+        val offset = letters.take(pos).sumOf { it.size }
+        while (items.size <= offset && items.size < total) {
+            while (loading) delay(50)
+            val before = items.size
+            load(false, size = (offset - items.size + 60).coerceIn(100, 1000))
+            if (items.size == before) break
+        }
+        if (items.isEmpty()) return
+        // The counts are a guide; land on the first item near there that really starts with the letter.
+        val target = (maxOf(0, offset - 40) until items.size).firstOrNull { titleStartsWith(items[it], letter.title) }
+            ?: offset.coerceIn(0, items.size - 1)
+        jumpIndex = target
+        grid.scrollToItem(target)
+        repeat(20) { if (runCatching { jumpFocus.requestFocus() }.isSuccess) return; delay(32) }
+    }
 
     Column(Modifier.fillMaxSize().padding(top = 90.dp)) {
         Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -81,6 +122,7 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
             Pill(if (unwatched) "Unwatched" else "All", { unwatched = !unwatched }, selected = unwatched)
             Pill(genre?.title ?: "Genre", { menu = if (menu == "genre") null else "genre" }, selected = genre != null)
             Pill("Collections", { showCollections = !showCollections }, selected = showCollections)
+            if (byTitle && letters.isNotEmpty()) Pill("A–Z", { menu = if (menu == "az") null else "az" }, selected = menu == "az")
         }
         when (menu) {
             "sort" -> LazyRow(contentPadding = PaddingValues(horizontal = D.gutter, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -90,12 +132,16 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
                 item { Pill("All genres", { genre = null; menu = null }, selected = genre == null) }
                 items(genres) { g -> Pill(g.title, { genre = g; menu = null }, selected = g == genre) }
             }
+            "az" -> LazyRow(contentPadding = PaddingValues(horizontal = D.gutter, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(letters) { l -> Pill(l.title, { menu = null; scope.launch { jumpTo(l) } }) }
+            }
         }
         Spacer(Modifier.height(8.dp))
         if (items.isEmpty() && loading) { Loading(); return@Column }
         if (items.isEmpty()) { Box(Modifier.padding(D.gutter)) { T("Nothing here.", color = C.dim) }; return@Column }
         LazyVerticalGrid(
             columns = GridCells.FixedSize(D.posterW),
+            state = grid,
             contentPadding = PaddingValues(horizontal = D.gutter, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(26.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -104,10 +150,17 @@ fun LibraryScreen(nav: Nav, section: PlexSection) {
                 val item = items[i]
                 PosterCard(item, { nav.open(item) }, onFocused = {
                     if (!showCollections && i > items.size - 20 && items.size < total) scope.launch { load(false) }
-                })
+                }, focusRequester = if (i == jumpIndex) jumpFocus else null)
             }
         }
     }
+}
+
+/** True if the item's sort title starts with [letter] ("#" = anything that isn't a letter). */
+private fun titleStartsWith(item: PlexItem, letter: String): Boolean {
+    val first = (item.str("titleSort") ?: item.title).trim().firstOrNull() ?: return false
+    return if (letter == "#") !first.isLetter() else first.toString().equals(letter.take(1), ignoreCase = true) ||
+        java.text.Normalizer.normalize(first.toString(), java.text.Normalizer.Form.NFD).firstOrNull()?.toString().equals(letter.take(1), ignoreCase = true)
 }
 
 /** Items of a collection. */

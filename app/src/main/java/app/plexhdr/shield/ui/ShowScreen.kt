@@ -53,6 +53,9 @@ fun ShowScreen(nav: Nav, initial: PlexItem) {
         else s.onDeck?.parentRatingKey?.let { k -> seasonIndex = seasons.indexOfFirst { it.ratingKey == k }.coerceAtLeast(0) }
         similar = s.ratingKey?.let { plex.similar(it) } ?: emptyList()
     }
+    // The card menu marked something (un)watched: reload the show and its episodes.
+    val seenChanges = remember { CardMenu.changes }
+    LaunchedEffect(CardMenu.changes) { if (CardMenu.changes != seenChanges) refresh++ }
     LaunchedEffect(seasons, seasonIndex) {
         episodes = seasons.getOrNull(seasonIndex)?.ratingKey?.let { runCatching { plex.children(it) }.getOrDefault(emptyList()) } ?: emptyList()
     }
@@ -103,7 +106,7 @@ fun ShowScreen(nav: Nav, initial: PlexItem) {
             item {
                 Shelf(null, episodes, { it.id }) { ep ->
                     WideCard("${ep.index ?: ""}. ${ep.title}", listOfNotNull(formatRuntime(ep.durationMs), ep.summary).joinToString(" · "),
-                        plexImage(ep.thumb, 600, 338), ep.progress, { nav.push(Screen.Detail(ep)) })
+                        plexImage(ep.thumb, 600, 338), ep.progress, { nav.push(Screen.Detail(ep)) }, item = ep)
                 }
             }
             val people = castAndCrew(s)
