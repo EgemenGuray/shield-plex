@@ -63,6 +63,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -508,10 +509,14 @@ private fun PanelRow(text: String, sub: String? = null, current: Boolean = false
 @Composable
 fun ChannelLogo(ch: Channel, modifier: Modifier, textSize: TextUnit = 13.sp) {
     val url = App.iptv.logo(ch)
+    val context = LocalContext.current
     var loaded by remember(url) { mutableStateOf(false) }
+    // Logos are decoded small (some providers serve 1000 px PNGs for a 64 dp row) and the initials worked out once.
+    val request = remember(url) { url?.let { coil3.request.ImageRequest.Builder(context).data(it).size(240, 136).build() } }
+    val initials = remember(ch.name) { Text.initials(ch.name) }
     Box(modifier.clip(RoundedCornerShape(6.dp)).background(if (loaded) Color.Transparent else Color(0x18FFFFFF)), contentAlignment = Alignment.Center) {
-        if (!loaded) T(Text.initials(ch.name), size = textSize, weight = FontWeight.Bold, color = C.faint, maxLines = 1)
-        if (url != null) AsyncImage(model = url, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+        if (!loaded) T(initials, size = textSize, weight = FontWeight.Bold, color = C.faint, maxLines = 1)
+        if (request != null) AsyncImage(model = request, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
             onSuccess = { loaded = true }, onError = { loaded = false })
     }
 }
@@ -587,15 +592,30 @@ private fun OptionsPanel(pc: IptvPlayerController, modifier: Modifier) {
 @Composable
 fun ChannelPreview(channel: Channel?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    // One small player for the pane: short buffers, no audio decoding (it's muted anyway), at most 720p picked from
+    // adaptive streams. It stops as focus moves and starts only once focus settles.
     val player = remember {
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(1_500, 4_000, 500, 1_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(context, OkHttpDataSource.Factory(App.iptv.http))))
-            .build().apply { volume = 0f; playWhenReady = true }
+            .setLoadControl(load)
+            .build().apply {
+                volume = 0f; playWhenReady = true
+                trackSelectionParameters = trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(MC.TRACK_TYPE_AUDIO, true)
+                    .setTrackTypeDisabled(MC.TRACK_TYPE_TEXT, true)
+                    .setMaxVideoSize(1280, 720)
+                    .build()
+            }
     }
     DisposableEffect(Unit) { onDispose { player.release() } }
-    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.stop() }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.stop(); player.clearMediaItems() }
     LaunchedEffect(channel?.id) {
         player.stop()
+        player.clearMediaItems()
         if (channel == null) return@LaunchedEffect
         delay(900)   // only once the focus settles
         player.setMediaItem(iptvItem(channel.url))
