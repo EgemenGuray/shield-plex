@@ -282,6 +282,129 @@ object Decide {
         }
     }
 
+    /** A short track name for the player's Audio & Subtitles panel: [title] on the first line, [detail] under it, [tags] as badges. */
+    data class TrackName(val title: String, val detail: String?, val tags: List<String>)
+
+    /** True when this audio track goes to the HDMI device untouched (same rule as [plan]). */
+    fun goesBitstream(s: PlexStream, settings: Settings, caps: Caps): Boolean {
+        val key = bitstreamKey(s) ?: return false
+        return settings.audioOutput == Settings.AudioOutput.Passthrough && (key in caps.bitstream || (key == "eac3joc" && "eac3" in caps.bitstream))
+    }
+
+    /** "English", "Español (Latin America)": from Plex's language name or the code, plus the region of the tag. */
+    fun languageName(s: PlexStream): String {
+        val base = s.language?.takeIf { it.isNotBlank() }
+            ?: s.languageCode?.let { code -> runCatching { java.util.Locale(iso639_1(code) ?: code).displayLanguage }.getOrNull()?.takeIf { it.isNotBlank() && !it.equals(code, true) } }
+            ?: s.languageCode?.uppercase()
+            ?: "Unknown"
+        val region = s.languageTag?.let { regionName(it) }
+        return if (region != null && !base.contains(region, true)) "$base ($region)" else base
+    }
+
+    /** "DTS-HD MA", "TrueHD Atmos", "Dolby Digital Plus"… from codec and profile. */
+    fun codecName(s: PlexStream): String {
+        val p = (s.profile ?: "").lowercase()
+        return when {
+            isTrueHD(s) -> if (isAtmos(s)) "TrueHD Atmos" else "TrueHD"
+            isDTS(s) -> when {
+                isDtsX(s) || p == "x" || p.contains("dts:x") -> "DTS:X"
+                p.contains("ma") -> "DTS-HD MA"
+                p.contains("hra") || p.contains("hr") -> "DTS-HD HRA"
+                p.contains("es") -> "DTS-ES"
+                p.contains("express") -> "DTS Express"
+                else -> "DTS"
+            }
+            s.codec == "eac3" -> if (isAtmos(s)) "Dolby Digital+ Atmos" else "Dolby Digital+"
+            s.codec == "ac3" -> "Dolby Digital"
+            s.codec == "aac" -> if (p.contains("he")) "HE-AAC" else "AAC"
+            s.codec == "flac" -> "FLAC"
+            s.codec == "alac" -> "ALAC"
+            s.codec == "opus" -> "Opus"
+            s.codec == "vorbis" -> "Vorbis"
+            s.codec == "mp3" -> "MP3"
+            s.codec == "mp2" -> "MP2"
+            s.codec.startsWith("pcm") || s.codec == "lpcm" -> "PCM"
+            // Subtitles
+            s.codec == "srt" || s.codec == "subrip" -> "SRT"
+            s.codec == "ass" || s.codec == "ssa" -> "ASS"
+            s.codec == "mov_text" || s.codec == "tx3g" -> "Text"
+            s.codec == "webvtt" || s.codec == "vtt" -> "WebVTT"
+            s.codec.contains("pgs") -> "PGS"
+            s.codec == "vobsub" || s.codec == "dvd_subtitle" -> "VobSub"
+            s.codec == "dvb_subtitle" -> "DVB"
+            s.codec.isEmpty() -> "Unknown"
+            else -> s.codec.uppercase()
+        }
+    }
+
+    private fun channelName(c: Int) = when (c) {
+        0 -> null
+        1 -> "Mono"
+        2 -> "Stereo"
+        3 -> "2.1"
+        6 -> "5.1"
+        7 -> "6.1"
+        8 -> "7.1"
+        else -> "$c ch"
+    }
+
+    private fun tagsOf(s: PlexStream): List<String> {
+        val t = (s.title ?: "").lowercase()
+        return listOfNotNull(
+            if (t.contains("comment")) "Commentary" else null,
+            if (s.forced || t.contains("forced")) "Forced" else null,
+            if (s.hearingImpaired || Regex("\\b(sdh|cc)\\b").containsMatchIn(t)) "SDH" else null,
+        )
+    }
+
+    // Words that only repeat what the label already says; a track title made of them adds nothing.
+    private val noiseWords = setOf(
+        "dts", "hd", "ma", "x", "dts-hd", "dts:x", "truehd", "true", "atmos", "dolby", "digital", "plus", "dd", "dd+", "ddp", "ac3", "eac3", "e-ac3",
+        "aac", "flac", "pcm", "lpcm", "opus", "mp3", "surround", "stereo", "mono", "audio", "track", "sound", "lossless", "hra", "es",
+        "5.1", "7.1", "2.0", "2.1", "6.1", "1.0", "ch", "channel", "channels", "kbps", "khz", "bit", "24", "16", "48", "96",
+        "srt", "pgs", "ass", "ssa", "sub", "subs", "subtitle", "subtitles", "subrip", "full", "default", "forced", "sdh", "cc", "commentary",
+        "-", "/", "|", "·", "(", ")", "[", "]",
+    )
+
+    /** The track's own title when it says something new ("Latin American", "Songs & Signs", "Director's Commentary"). */
+    private fun extraTitle(s: PlexStream, language: String): String? {
+        val t = s.title?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val words = t.lowercase().split(Regex("[\\s,()\\[\\]/|·:+-]+")).filter { it.isNotEmpty() }
+        val langWords = language.lowercase().split(Regex("[\\s()]+")).toSet() + setOfNotNull(s.languageCode?.lowercase(), s.language?.lowercase())
+        if (words.all { it in noiseWords || it in langWords || it.toDoubleOrNull() != null }) return null
+        return t
+    }
+
+    /** Numbers names that still read the same: "English · SRT 1", "English · SRT 2" (as [trackLabels] does). */
+    private fun numbered(names: List<TrackName>): List<TrackName> {
+        val keys = names.map { it.title + "|" + it.tags.joinToString(",") + "|" + (it.detail ?: "") }
+        return names.mapIndexed { i, n ->
+            if (keys.count { it == keys[i] } < 2) n else n.copy(title = "${n.title} ${(0..i).count { j -> keys[j] == keys[i] }}")
+        }
+    }
+
+    /**
+     * Audio tracks as "English · DTS-HD MA 7.1" over "Bitstream to soundbar" / "Decoded on Shield", with Commentary /
+     * Forced / SDH tags. [bitstream] says whether a track goes to the HDMI device untouched.
+     */
+    fun audioNames(list: List<PlexStream>, bitstream: (PlexStream) -> Boolean): List<TrackName> = numbered(list.map { s ->
+        val lang = languageName(s)
+        val title = listOfNotNull(lang, listOfNotNull(codecName(s), channelName(s.channels)).joinToString(" ")).joinToString(" · ")
+        val tags = tagsOf(s)
+        val extra = extraTitle(s, lang)?.takeIf { e -> !(tags.contains("Commentary") && e.equals("commentary", true)) }
+        val output = if (bitstream(s)) "Bitstream to soundbar" else "Decoded on Shield"
+        TrackName(title, listOfNotNull(output, extra).joinToString(" · "), tags)
+    })
+
+    /** Subtitle tracks as "English" or "English · Songs & Signs" over "SRT · External", with Forced / SDH tags. */
+    fun subtitleNames(list: List<PlexStream>): List<TrackName> = numbered(list.map { s ->
+        val lang = languageName(s)
+        val extra = extraTitle(s, lang)
+        val title = listOfNotNull(lang, extra).joinToString(" · ")
+        val where = if (s.isExternal) "External" else "Embedded"
+        TrackName(title, "${codecName(s)} · $where", tagsOf(s))
+    })
+
     private fun regionName(tag: String): String? {
         val parts = tag.split('-', '_')
         if (parts.size < 2) return null

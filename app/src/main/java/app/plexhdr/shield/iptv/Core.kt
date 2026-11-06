@@ -2,8 +2,19 @@ package app.plexhdr.shield.iptv
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.Reader
+import java.io.StringReader
+import java.io.Writer
 import java.net.URLEncoder
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -87,8 +98,10 @@ enum class QTag(val label: String) {
     val isAudio get() = this == Surround || this == Stereo
 
     companion object {
+        private val punct = Regex("[|\\[\\]():\\-_]")
+
         fun parse(text: String): List<QTag> {
-            val up = " " + text.uppercase().replace(Regex("[|\\[\\]():\\-_]"), " ") + " "
+            val up = " " + text.uppercase().replace(punct, " ") + " "
             fun has(vararg ws: String) = ws.any { up.contains(" $it ") }
             val t = ArrayList<QTag>()
             when {
@@ -129,11 +142,46 @@ enum class QTag(val label: String) {
 }
 
 object Text {
+    private val foldCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * Text reduced for searching: lower case, accents and Turkish letters folded (İ I ı → i, ş → s, ğ → g, ç → c, ö → o,
+     * ü → u), superscript and small-capital tags ("ᴿᴬᵂ", "⁴ᴷ") made plain, punctuation turned into single spaces.
+     */
+    fun fold(s: String): String {
+        if (s.isEmpty()) return s
+        foldCache[s]?.let { return it }
+        val n = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKD)
+        val sb = StringBuilder(n.length)
+        var space = true
+        for (c in n) {
+            if (Character.getType(c) == Character.NON_SPACING_MARK.toInt()) continue
+            val l = when (c) { 'İ', 'I', 'ı' -> 'i'; else -> c.lowercaseChar() }
+            if (l.isLetterOrDigit()) { sb.append(l); space = false } else if (!space) { sb.append(' '); space = true }
+        }
+        val out = sb.toString().trimEnd()
+        if (foldCache.size < 400_000) foldCache[s] = out
+        return out
+    }
+
+    /** The words of a search, folded. */
+    fun words(query: String): List<String> = fold(query).split(' ').filter { it.isNotEmpty() }
+
+    /** True when every word of the search appears (as part of a word) in one of the values, or the search is empty. */
+    fun matches(words: List<String>, vararg values: String?): Boolean {
+        if (words.isEmpty()) return true
+        val f = values.mapNotNull { it?.let(::fold) }
+        return words.all { w -> f.any { it.contains(w) } }
+    }
+
     /** Short label for a channel without a logo: "Kanal 2 HD" gives K2, "TRT 1" gives TRT 1, "Discovery Science" gives DS. */
+    private val prefixRe = Regex("^\\s*[A-Z]{2,4}\\s*[:|\\-]\\s*")
+    private val qualityRe = Regex("\\b(4K|UHD|FHD|HD|SD|HEVC|H265|50FPS|60FPS|RAW|BACKUP)\\b", RegexOption.IGNORE_CASE)
+    private val spaceRe = Regex("\\s+")
+
     fun initials(name: String): String {
-        val n = name.replace(Regex("^\\s*[A-Z]{2,4}\\s*[:|\\-]\\s*"), "")
-            .replace(Regex("\\b(4K|UHD|FHD|HD|SD|HEVC|H265|50FPS|60FPS|RAW|BACKUP)\\b", RegexOption.IGNORE_CASE), "").trim()
-        val w = n.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val n = name.replace(prefixRe, "").replace(qualityRe, "").trim()
+        val w = n.split(spaceRe).filter { it.isNotEmpty() }
         if (w.isEmpty()) return ""
         val num = if (w.size > 1 && w[1].all { it.isDigit() }) w[1] else ""
         return when {
@@ -161,8 +209,10 @@ object Text {
 
     data class TitleYear(val title: String, val year: Int?)
 
+    private val yearRe = Regex("^(.*?)[\\s\\-]*[(\\[]?((?:19|20)\\d{2})[)\\]]?\\s*$")
+
     fun splitYear(name: String): TitleYear {
-        val m = Regex("^(.*?)[\\s\\-]*[(\\[]?((?:19|20)\\d{2})[)\\]]?\\s*$").find(name) ?: return TitleYear(name, null)
+        val m = yearRe.find(name) ?: return TitleYear(name, null)
         val t = m.groupValues[1].trim()
         return if (t.isEmpty()) TitleYear(name, null) else TitleYear(t, m.groupValues[2].toInt())
     }
@@ -188,9 +238,13 @@ object Text {
     }
 
     /** Lower-case title without country prefixes, brackets and years, for matching TMDB trends to a provider's names. */
+    private val ctCountry = Regex("^\\s*[|\\[]?[A-Z]{2,3}[|\\]]?\\s*[-:|]\\s*")
+    private val ctPipes = Regex("^\\s*\\|[^|]+\\|\\s*")
+    private val ctBrackets = Regex("[(\\[][^)\\]]*[)\\]]")
+    private val ctYear = Regex("\\b(19|20)\\d{2}\\b")
+
     fun cleanTitle(s: String): String = key(
-        s.replace(Regex("^\\s*[|\\[]?[A-Z]{2,3}[|\\]]?\\s*[-:|]\\s*"), " ").replace(Regex("^\\s*\\|[^|]+\\|\\s*"), " ")
-            .replace(Regex("[(\\[][^)\\]]*[)\\]]"), " ").replace(Regex("\\b(19|20)\\d{2}\\b"), " ")
+        s.replace(ctCountry, " ").replace(ctPipes, " ").replace(ctBrackets, " ").replace(ctYear, " ")
     )
 
     fun decodeBody(bytes: ByteArray): String {
@@ -198,6 +252,45 @@ object Text {
             GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() } else bytes
         val utf = Charsets.UTF_8.newDecoder()
         return runCatching { utf.decode(java.nio.ByteBuffer.wrap(raw)).toString() }.getOrElse { String(raw, Charsets.ISO_8859_1) }
+    }
+
+    /** The stream, unpacked when it is gzip (looked up from its first two bytes, so a wrong Content-Encoding doesn't matter). */
+    fun unzip(input: InputStream): InputStream {
+        val b = if (input.markSupported()) input else BufferedInputStream(input, 1 shl 16)
+        b.mark(2)
+        val m1 = b.read(); val m2 = b.read()
+        b.reset()
+        return if (m1 == 0x1f && m2 == 0x8b) BufferedInputStream(java.util.zip.GZIPInputStream(b, 1 shl 16), 1 shl 16) else b
+    }
+
+    private val encRe = Regex("<\\?xml[^>]*encoding=[\"']([\\w.\\-]+)[\"']")
+
+    /** A text reader over a (maybe gzip) body: the charset an XML prolog names, else UTF-8 with bad bytes replaced. */
+    fun reader(input: InputStream): Reader {
+        val raw = unzip(input)
+        raw.mark(512)
+        val head = ByteArray(512)
+        var n = 0
+        while (n < head.size) { val r = raw.read(head, n, head.size - n); if (r < 0) break; n += r }
+        raw.reset()
+        val cs = encRe.find(String(head, 0, n, Charsets.ISO_8859_1))?.groupValues?.get(1)
+            ?.let { runCatching { Charset.forName(it) }.getOrNull() } ?: Charsets.UTF_8
+        return InputStreamReader(raw, cs.newDecoder().onMalformedInput(CodingErrorAction.REPLACE).onUnmappableCharacter(CodingErrorAction.REPLACE))
+    }
+
+    /**
+     * Reads a text file line by line without holding it in memory: UTF-8, or ISO-8859-1 when it isn't valid UTF-8
+     * (then [block] runs a second time). [skip] lines are dropped first.
+     */
+    fun <T> lines(file: File, skip: Int = 0, block: (Sequence<String>) -> T): T {
+        fun run(cs: Charset, strict: Boolean): T {
+            val dec = cs.newDecoder().apply {
+                val a = if (strict) CodingErrorAction.REPORT else CodingErrorAction.REPLACE
+                onMalformedInput(a); onUnmappableCharacter(a)
+            }
+            return InputStreamReader(FileInputStream(file), dec).buffered(1 shl 16).use { block(it.lineSequence().drop(skip)) }
+        }
+        return try { run(Charsets.UTF_8, true) } catch (e: CharacterCodingException) { run(Charsets.ISO_8859_1, false) }
     }
 }
 
@@ -223,6 +316,9 @@ object M3U {
 
     enum class Kind { Live, Movie, Series }
 
+    private val extRe = Regex("\\.([a-z0-9]+)$")
+    private val videoExts = setOf("mp4", "mkv", "avi", "mov", "m4v", "wmv", "webm")
+
     fun classify(url: String, name: String, type: String): Kind {
         when (type) {
             "movie", "movies", "vod" -> return Kind.Movie
@@ -232,14 +328,20 @@ object M3U {
         val lower = url.lowercase()
         if ("/series/" in lower) return Kind.Series
         if ("/movie/" in lower || "/movies/" in lower) return Kind.Movie
-        val ext = Regex("\\.([a-z0-9]+)$").find(lower.substringBefore('?'))?.groupValues?.get(1)
-        if (ext in setOf("mp4", "mkv", "avi", "mov", "m4v", "wmv", "webm")) return if (Text.episodeInfo(name) != null) Kind.Series else Kind.Movie
+        val ext = extRe.find(lower.substringBefore('?'))?.groupValues?.get(1)
+        if (ext in videoExts) return if (Text.episodeInfo(name) != null) Kind.Series else Kind.Movie
         return Kind.Live
     }
 
     private fun int(v: String?) = v?.trim()?.toIntOrNull()
 
-    fun parse(text: String, pl: Playlist): Content {
+    fun parse(text: String, pl: Playlist): Content = parse(text.lineSequence(), pl)
+
+    /** True when the lines look like an M3U playlist at all. */
+    fun looksLikeM3U(lines: Sequence<String>) = lines.take(2000).any { it.contains("#EXTINF") || it.contains("#EXTM3U") }
+
+    /** Parses line by line, so a big playlist can come straight from a file. */
+    fun parse(lines: Sequence<String>, pl: Playlist): Content {
         val pid = pl.id
         val channels = ArrayList<Channel>()
         val movies = ArrayList<Movie>()
@@ -254,7 +356,7 @@ object M3U {
         var ua: String? = null
         val seen = HashSet<String>()
 
-        for (rawLine in text.lineSequence()) {
+        for (rawLine in lines) {
             val line = rawLine.trim()
             if (line.isEmpty()) continue
             if (line.startsWith("#EXTM3U")) {
@@ -357,6 +459,53 @@ internal fun jsonList(text: String?): List<JSONObject> {
     }.getOrDefault(emptyList())
 }
 
+/** The objects of a JSON list, handed out one at a time: lets a 50 000-entry answer be read without building it whole. */
+typealias JsonItems = ((JSONObject) -> Unit) -> Unit
+
+fun jsonItems(text: String?): JsonItems? = text?.let { t -> { each -> jsonObjects(StringReader(t), each) } }
+fun jsonItems(file: File): JsonItems? = if (!file.exists()) null else { each -> Text.reader(FileInputStream(file)).use { jsonObjects(it, each) } }
+
+/**
+ * Streams the objects of a JSON array (`[{..},{..}]`) or of an object of objects (`{"1":{..},"2":{..}}`), parsing each with
+ * org.json as it is reached. Anything else at the top level is skipped; a broken entry is dropped.
+ */
+fun jsonObjects(r: Reader, each: (JSONObject) -> Unit) {
+    val chunk = CharArray(1 shl 16)
+    val sb = StringBuilder()
+    var top = 0            // '[' or '{' once seen
+    var depth = 0          // nesting inside the current entry (0 = between entries)
+    var inStr = false; var esc = false
+    var skipStr = false    // inside a string at the top level (a key, or a plain value)
+    while (true) {
+        val n = r.read(chunk)
+        if (n < 0) return
+        var k = 0
+        while (k < n) {
+            val ch = chunk[k++]
+            if (top == 0) { if (ch == '[' || ch == '{') top = ch.code else if (!ch.isWhitespace()) return; continue }
+            if (depth == 0) {
+                if (skipStr) { if (esc) esc = false else if (ch == '\\') esc = true else if (ch == '"') skipStr = false; continue }
+                when (ch) {
+                    '"' -> skipStr = true
+                    '{', '[' -> { depth = 1; sb.setLength(0); sb.append(ch) }
+                    ']', '}' -> return
+                }
+                continue
+            }
+            sb.append(ch)
+            if (inStr) { if (esc) esc = false else if (ch == '\\') esc = true else if (ch == '"') inStr = false; continue }
+            when (ch) {
+                '"' -> inStr = true
+                '{', '[' -> depth++
+                '}', ']' -> if (--depth == 0) {
+                    if (sb[0] == '{') runCatching { JSONObject(sb.toString()) }.getOrNull()?.let(each)
+                    sb.setLength(0)
+                }
+            }
+        }
+    }
+}
+
 class Xtream(private val pl: Playlist) {
     val base: String = normalize(pl.url)
     private val u = enc(pl.username)
@@ -377,7 +526,11 @@ class Xtream(private val pl: Playlist) {
     fun timeshift(id: Int, startMs: Long, minutes: Int, tz: String?) = "$base/timeshift/$u/$p/$minutes/${tsDate(startMs, tz)}/$id.ts"
 
     /** Builds the library from the answers to: account, live/vod/series categories and lists (in that order). */
-    fun parse(account: String, liveCats: String?, live: String?, vodCats: String?, vod: String?, seriesCats: String?, seriesList: String?): Content {
+    fun parse(account: String, liveCats: String?, live: String?, vodCats: String?, vod: String?, seriesCats: String?, seriesList: String?): Content =
+        parse(account, jsonItems(liveCats), jsonItems(live), jsonItems(vodCats), jsonItems(vod), jsonItems(seriesCats), jsonItems(seriesList))
+
+    /** The same, reading each list as a stream (from files written while downloading). */
+    fun parse(account: String, liveCats: JsonItems?, live: JsonItems?, vodCats: JsonItems?, vod: JsonItems?, seriesCats: JsonItems?, seriesList: JsonItems?): Content {
         val root = runCatching { JSONObject(account) }.getOrNull() ?: throw IptvException("This doesn't look like an Xtream Codes server.")
         val user = root.optJSONObject("user_info") ?: throw IptvException("This doesn't look like an Xtream Codes server.")
         if (user.i("auth") == 0) throw IptvException("The username or password was refused.")
@@ -385,44 +538,47 @@ class Xtream(private val pl: Playlist) {
         val tz = root.optJSONObject("server_info")?.s("timezone")
         val pid = pl.id
 
-        fun cats(t: String?): Pair<Map<String, String>, List<String>> {
+        fun cats(t: JsonItems?): Pair<Map<String, String>, List<String>> {
             val m = HashMap<String, String>(); val order = ArrayList<String>()
-            jsonList(t).forEach { x -> val id = x.s("category_id"); val n = x.s("category_name"); if (id != null && n != null) { m[id] = n; order += n } }
+            t?.invoke { x -> val id = x.s("category_id"); val n = x.s("category_name"); if (id != null && n != null) { m[id] = n; order += n } }
             return m to order
         }
         fun groupsUsed(order: List<String>, used: Set<String>) = (order + "Other").distinct().filter { it in used }
 
         val (lc, lo) = cats(liveCats)
         val usedL = HashSet<String>()
-        val channels = jsonList(live).mapNotNull { s ->
-            val id = s.i("stream_id") ?: return@mapNotNull null
+        val channels = ArrayList<Channel>()
+        live?.invoke { s ->
+            val id = s.i("stream_id") ?: return@invoke
             val g = lc[s.s("category_id")] ?: "Other"
             usedL += g
             val days = s.i("tv_archive_duration") ?: 0
-            Channel(
-                "$pid|$id", pid, s.s("name") ?: "Channel $id", g, s.s("stream_icon"), live(id), s.s("epg_channel_id"), s.i("num"),
+            channels += Channel(
+                "$pid|$id", pid, s.s("name") ?: "Channel $id", g, s.s("stream_icon"), this.live(id), s.s("epg_channel_id"), s.i("num"),
                 if (s.b("tv_archive") && days > 0) Catchup("xc", days, null) else null, pl.userAgent.ifEmpty { null }, id,
             )
         }
         val (vc, vo) = cats(vodCats)
         val usedV = HashSet<String>()
-        val movies = jsonList(vod).mapNotNull { s ->
-            val id = s.i("stream_id") ?: return@mapNotNull null
+        val movies = ArrayList<Movie>()
+        vod?.invoke { s ->
+            val id = s.i("stream_id") ?: return@invoke
             val g = vc[s.s("category_id")] ?: "Other"
             usedV += g
             val ty = Text.splitYear(s.s("name") ?: "Film $id")
-            Movie(
+            movies += Movie(
                 "$pid|m|$id", pid, ty.title, g, s.s("stream_icon"), movie(id, s.s("container_extension") ?: "mp4"),
                 ty.year ?: yearOf(s.s("year")) ?: yearOf(s.s("releasedate")), s.d("rating")?.takeIf { it > 0 }, s.i("added")?.let { it * 1000L }, id,
             )
         }
         val (sc, so) = cats(seriesCats)
         val usedS = HashSet<String>()
-        val series = jsonList(seriesList).mapNotNull { s ->
-            val id = s.i("series_id") ?: return@mapNotNull null
+        val series = ArrayList<Series>()
+        seriesList?.invoke { s ->
+            val id = s.i("series_id") ?: return@invoke
             val g = sc[s.s("category_id")] ?: "Other"
             usedS += g
-            Series(
+            series += Series(
                 "$pid|s|$id", pid, s.s("name") ?: "Series $id", g, s.s("cover"), s.d("rating")?.takeIf { it > 0 },
                 yearOf(s.s("releaseDate")) ?: yearOf(s.s("release_date")), s.s("plot"), s.s("genre"), id,
             )
@@ -492,28 +648,32 @@ class Guide(
     /** Channel icon (logo) by guide channel id. */
     val icons: Map<String, String> = emptyMap(),
 ) {
-    fun toTsv(): String {
-        val sb = StringBuilder()
+    fun toTsv(): String = java.io.StringWriter().also { writeTsv(it) }.toString()
+
+    /** Writes the guide as tab-separated lines, straight to [w] (no big string in between). */
+    fun writeTsv(w: Writer) {
         fun c(s: String?) = (s ?: "").replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
-        names.forEach { (k, v) -> sb.append("N\t").append(c(k)).append('\t').append(c(v)).append('\n') }
-        icons.forEach { (k, v) -> sb.append("I\t").append(c(k)).append('\t').append(c(v)).append('\n') }
+        names.forEach { (k, v) -> w.append("N\t").append(c(k)).append('\t').append(c(v)).append('\n') }
+        icons.forEach { (k, v) -> w.append("I\t").append(c(k)).append('\t').append(c(v)).append('\n') }
         programmes.forEach { (ch, list) ->
+            val cc = c(ch)
             list.forEach { p ->
-                sb.append("P\t").append(c(ch)).append('\t').append(p.start).append('\t').append(p.end).append('\t').append(c(p.title)).append('\t')
+                w.append("P\t").append(cc).append('\t').append(p.start.toString()).append('\t').append(p.end.toString()).append('\t').append(c(p.title)).append('\t')
                     .append(c(p.desc)).append('\t').append(c(p.category)).append('\t').append(c(p.episode)).append('\n')
             }
         }
-        return sb.toString()
     }
 
     companion object {
         val Empty = Guide(emptyMap(), emptyMap(), 0)
 
-        fun fromTsv(text: String, updated: Long): Guide {
+        fun fromTsv(text: String, updated: Long): Guide = fromTsv(text.lineSequence(), updated)
+
+        fun fromTsv(lines: Sequence<String>, updated: Long): Guide {
             val progs = HashMap<String, MutableList<Programme>>()
             val names = HashMap<String, String>()
             val icons = HashMap<String, String>()
-            text.lineSequence().forEach { l ->
+            lines.forEach { l ->
                 val f = l.split('\t')
                 if (f[0] == "N" && f.size >= 3) names[f[1]] = f[2]
                 else if (f[0] == "I" && f.size >= 3) icons[f[1]] = f[2]
@@ -525,75 +685,198 @@ class Guide(
             }
             return Guide(progs, names, updated, icons)
         }
+
+        /** Index of the first programme in [list] (sorted by start) that ends after [at], or list.size. */
+        fun firstEndingAfter(list: List<Programme>, at: Long): Int {
+            var lo = 0; var hi = list.size
+            while (lo < hi) { val m = (lo + hi) ushr 1; if (list[m].start <= at) lo = m + 1 else hi = m }
+            // lo = first starting after [at]; step back over programmes still running at [at].
+            var i = lo
+            while (i > 0 && list[i - 1].end > at) i--
+            return i
+        }
+
+        /** What's on at [at] and what follows, using a binary search. */
+        fun nowNext(list: List<Programme>, at: Long): Pair<Programme?, Programme?> {
+            val i = firstEndingAfter(list, at)
+            val p = list.getOrNull(i) ?: return null to null
+            return if (p.start <= at) p to list.getOrNull(i + 1) else null to p
+        }
+
+        /** Programmes overlapping [from, to). */
+        fun window(list: List<Programme>, from: Long, to: Long): List<Programme> {
+            val out = ArrayList<Programme>()
+            var i = firstEndingAfter(list, from)
+            while (i < list.size) {
+                val p = list[i++]
+                if (p.start >= to) break
+                if (p.end > from) out += p
+            }
+            return out
+        }
     }
 }
 
 object XMLTV {
-    private val dateRe = Regex("^(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})?\\s*([+\\-]\\d{4})?")
+    /** Days since 1970-01-01 for a civil date (proleptic Gregorian). */
+    private fun days(y0: Int, m: Int, d: Int): Long {
+        val y = if (m <= 2) y0 - 1 else y0
+        val era = (if (y >= 0) y else y - 399) / 400
+        val yoe = y - era * 400
+        val mp = (m + 9) % 12
+        val doy = (153 * mp + 2) / 5 + d - 1
+        val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097L + doe - 719468
+    }
 
+    /** "20240131203000 +0100" (seconds and offset optional) to epoch ms. Hand-parsed: it runs for every programme. */
     fun date(s: String?): Long? {
-        val m = dateRe.find(s?.trim() ?: return null) ?: return null
-        val g = m.groupValues
-        val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
-        cal.clear()
-        cal.set(g[1].toInt(), g[2].toInt() - 1, g[3].toInt(), g[4].toInt(), g[5].toInt(), g[6].ifEmpty { "0" }.toInt())
-        var t = cal.timeInMillis
-        if (g[7].isNotEmpty()) {
-            val sign = if (g[7][0] == '-') -1 else 1
-            t -= sign * (g[7].substring(1, 3).toInt() * 60 + g[7].substring(3, 5).toInt()) * 60_000L
+        val t = s?.trim() ?: return null
+        if (t.length < 12) return null
+        for (k in 0 until 12) if (t[k] !in '0'..'9') return null
+        fun n(a: Int, b: Int): Int { var v = 0; for (k in a until b) v = v * 10 + (t[k] - '0'); return v }
+        val mo = n(4, 6); val d = n(6, 8)
+        if (mo !in 1..12 || d !in 1..31) return null
+        var p = 12
+        var sec = 0
+        if (t.length >= 14 && t[12] in '0'..'9' && t[13] in '0'..'9') { sec = n(12, 14); p = 14 }
+        while (p < t.length && t[p].isWhitespace()) p++
+        var off = 0
+        if (p + 5 <= t.length && (t[p] == '+' || t[p] == '-') && (1..4).all { t[p + it] in '0'..'9' }) {
+            off = (if (t[p] == '-') -1 else 1) * (n(p + 1, p + 3) * 60 + n(p + 3, p + 5))
         }
-        return t
+        return ((days(n(0, 4), mo, d) * 24 + n(8, 10)) * 60 + n(10, 12)) * 60_000L + sec * 1000L - off * 60_000L
     }
 
     private val entRe = Regex("&(amp|lt|gt|quot|apos|#\\d+|#x[0-9a-fA-F]+);")
-    fun decode(s: String): String = entRe.replace(s) { m ->
+    fun decode(s: String): String = if ('&' !in s) s else entRe.replace(s) { m ->
         when (val e = m.groupValues[1]) {
             "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "apos" -> "'"
             else -> if (e[1] == 'x' || e[1] == 'X') e.substring(2).toInt(16).toChar().toString() else e.substring(1).toInt().toChar().toString()
         }
     }
 
-    private val chRe = Regex("<channel\\b[^>]*\\bid=\"([^\"]*)\"[^>]*>([\\s\\S]*?)</channel>")
     private val dnRe = Regex("<display-name[^>]*>([\\s\\S]*?)</display-name>")
-    private val iconRe = Regex("<icon\\b[^>]*\\bsrc=\"([^\"]+)\"")
-    private val pRe = Regex("<programme\\b([^>]*)>([\\s\\S]*?)</programme>")
+    private val iconRe = Regex("<icon\\b[^>]*\\bsrc=[\"']([^\"']+)[\"']")
     private val cdata = Regex("<!\\[CDATA\\[([\\s\\S]*?)]]>")
-    private val tagRes = HashMap<String, Regex>()
+    private val episodeRe = Regex("<episode-num[^>]*system=[\"']xmltv_ns[\"'][^>]*>([^<]*)<")
+    private val tagRes = listOf("title", "sub-title", "desc", "category").associateWith { Regex("<$it\\b[^>]*>([\\s\\S]*?)</$it>") }
 
     private fun tag(body: String, name: String): String? {
-        val re = tagRes.getOrPut(name) { Regex("<$name\\b[^>]*>([\\s\\S]*?)</$name>") }
-        return re.find(body)?.let { decode(cdata.replace(it.groupValues[1], "$1")).trim().ifEmpty { null } }
+        val re = tagRes.getValue(name)
+        return re.find(body)?.let { m ->
+            val v = m.groupValues[1]
+            decode(if (v.contains("<![CDATA[")) cdata.replace(v, "$1") else v).trim().ifEmpty { null }
+        }
     }
 
-    /** Keeps only the wanted channels (by guide id or name key) and programmes overlapping [from, to). */
-    fun parse(text: String, wantedIds: Set<String>, wantedNames: Set<String>, from: Long, to: Long): Guide {
+    /** The value of attribute [name] in a start tag (either quote style). */
+    internal fun attr(tag: String, name: String): String? {
+        var i = 0
+        while (true) {
+            i = tag.indexOf(name, i)
+            if (i < 0) return null
+            var j = i + name.length
+            if (i > 0 && tag[i - 1].isWhitespace()) {
+                while (j < tag.length && tag[j].isWhitespace()) j++
+                if (j < tag.length && tag[j] == '=') {
+                    j++
+                    while (j < tag.length && tag[j].isWhitespace()) j++
+                    if (j < tag.length && (tag[j] == '"' || tag[j] == '\'')) {
+                        val e = tag.indexOf(tag[j], j + 1)
+                        return if (e < 0) null else tag.substring(j + 1, e)
+                    }
+                }
+            }
+            i += name.length
+        }
+    }
+
+    private const val MAX_ELEMENT = 1 shl 20
+
+    private fun isTag(b: StringBuilder, at: Int, name: String): Boolean {
+        if (at + name.length >= b.length) return false
+        for (k in name.indices) if (b[at + k] != name[k]) return false
+        val c = b[at + name.length]
+        return c == '>' || c == '/' || c.isWhitespace()
+    }
+
+    /**
+     * Streams [r] and hands each whole `<channel>` (programme = false) or `<programme>` element to [onElement] as text.
+     * Only one element (plus a 64 KB read buffer) is held at a time, so a 200 MB guide never sits in memory.
+     */
+    fun scan(r: Reader, onElement: (programme: Boolean, element: String) -> Unit) {
+        val buf = StringBuilder(1 shl 17)
+        val chunk = CharArray(1 shl 16)
+        var eof = false
+        while (true) {
+            var pos = 0
+            var keep = -1
+            while (true) {
+                val i = buf.indexOf("<", pos)
+                if (i < 0) { pos = buf.length; break }
+                if (!eof && i + 12 > buf.length) { keep = i; break }
+                val prog = isTag(buf, i + 1, "programme")
+                if (!prog && !isTag(buf, i + 1, "channel")) { pos = i + 1; continue }
+                val gt = buf.indexOf(">", i)
+                if (gt < 0) {
+                    if (eof || buf.length - i > MAX_ELEMENT) { pos = i + 1; continue }
+                    keep = i; break
+                }
+                if (buf[gt - 1] == '/') { onElement(prog, buf.substring(i, gt + 1)); pos = gt + 1; continue }
+                val close = if (prog) "</programme>" else "</channel>"
+                val end = buf.indexOf(close, gt)
+                if (end < 0) {
+                    if (eof || buf.length - i > MAX_ELEMENT) { pos = i + 1; continue }
+                    keep = i; break
+                }
+                onElement(prog, buf.substring(i, end + close.length))
+                pos = end + close.length
+            }
+            if (eof) return
+            buf.delete(0, if (keep >= 0) keep else pos)
+            val n = r.read(chunk)
+            if (n < 0) eof = true else buf.append(chunk, 0, n)
+        }
+    }
+
+    fun parse(text: String, wantedIds: Set<String>, wantedNames: Set<String>, from: Long, to: Long): Guide =
+        parse(StringReader(text), wantedIds, wantedNames, from, to)
+
+    /**
+     * Keeps only the wanted channels (by guide id or name key) and programmes overlapping [from, to).
+     * Reads the guide as a stream; channels come before programmes in XMLTV, so the kept set is known in time.
+     */
+    fun parse(r: Reader, wantedIds: Set<String>, wantedNames: Set<String>, from: Long, to: Long): Guide {
         val progs = HashMap<String, MutableList<Programme>>()
         val names = HashMap<String, String>()
         val kept = HashSet<String>()
         val icons = HashMap<String, String>()
-        chRe.findAll(text).forEach { m ->
-            val id = decode(m.groupValues[1]).lowercase()
-            var keep = id in wantedIds
-            dnRe.findAll(m.groupValues[2]).forEach { d ->
-                val k = Text.key(decode(d.groupValues[1]))
-                if (k in wantedNames) keep = true
-                names.putIfAbsent(k, id)
+        scan(r) { programme, el ->
+            val gt = el.indexOf('>')
+            val head = el.substring(0, gt + 1)
+            val body = if (head.endsWith("/>")) "" else el.substring(gt + 1)
+            if (!programme) {
+                val id = decode(attr(head, "id") ?: return@scan).lowercase()
+                var keep = id in wantedIds
+                dnRe.findAll(body).forEach { d ->
+                    val k = Text.key(decode(d.groupValues[1]))
+                    if (k in wantedNames) keep = true
+                    names.putIfAbsent(k, id)
+                }
+                if (keep) {
+                    kept += id
+                    iconRe.find(body)?.let { icons[id] = decode(it.groupValues[1]) }
+                }
+                return@scan
             }
-            if (keep) {
-                kept += id
-                iconRe.find(m.groupValues[2])?.let { icons[id] = decode(it.groupValues[1]) }
-            }
-        }
-        pRe.findAll(text).forEach { m ->
-            val a = m.groupValues[1]
-            val ch = Regex("channel=\"([^\"]*)\"").find(a)?.groupValues?.get(1)?.let { decode(it).lowercase() } ?: return@forEach
-            if (ch !in kept && ch !in wantedIds) return@forEach
-            val start = date(Regex("start=\"([^\"]*)\"").find(a)?.groupValues?.get(1)) ?: return@forEach
-            val stop = date(Regex("stop=\"([^\"]*)\"").find(a)?.groupValues?.get(1)) ?: (start + 3_600_000)
-            if (stop <= from || start >= to) return@forEach
-            val body = m.groupValues[2]
+            val ch = attr(head, "channel")?.let { decode(it).lowercase() } ?: return@scan
+            if (ch !in kept && ch !in wantedIds) return@scan
+            val start = date(attr(head, "start")) ?: return@scan
+            val stop = date(attr(head, "stop")) ?: (start + 3_600_000)
+            if (stop <= from || start >= to) return@scan
             var sub = tag(body, "sub-title")
-            Regex("<episode-num[^>]*system=\"xmltv_ns\"[^>]*>([^<]*)<").find(body)?.let { en ->
+            episodeRe.find(body)?.let { en ->
                 val parts = en.groupValues[1].split('.')
                 val sn = parts.getOrNull(0)?.trim()?.toIntOrNull()
                 val ep = parts.getOrNull(1)?.trim()?.toIntOrNull()

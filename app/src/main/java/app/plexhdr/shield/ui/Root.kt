@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -20,6 +21,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +31,8 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -67,13 +73,19 @@ sealed interface Screen {
     ) : Screen
 }
 
-/** A simple back stack. The first entry is the current tab. */
+/** The back stack. The first entry is the current tab. Each entry keeps its page's state while other pages are on top. */
 class Nav(first: Screen = Screen.Home) {
-    val stack = mutableStateListOf<Screen>(first)
-    val top: Screen get() = stack.last()
-    fun push(s: Screen) { stack.add(s) }
-    fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
-    fun tab(s: Screen) { stack.clear(); stack.add(s) }
+    val entries = mutableStateListOf(NavEntry(first))
+    val stack: List<Screen> get() = entries.map { it.screen }
+    val top: Screen get() = entries.last().screen
+    val size: Int get() = entries.size
+    /** Called with each entry that leaves the stack, so its saved state is forgotten. */
+    var onDrop: (NavEntry) -> Unit = {}
+    fun push(s: Screen) { entries.add(NavEntry(s)) }
+    fun pop() { if (entries.size > 1) onDrop(entries.removeAt(entries.lastIndex)) }
+    /** Swaps the page on top for another (e.g. the next episode's details). */
+    fun replace(s: Screen) { onDrop(entries.set(entries.lastIndex, NavEntry(s))) }
+    fun tab(s: Screen) { entries.forEach { onDrop(it) }; entries.clear(); entries.add(NavEntry(s)) }
 
     /** Movies and episodes open their details page, shows their show page, collections their list. */
     fun open(item: PlexItem) = when (item.type) {
@@ -104,8 +116,10 @@ fun AppRoot() {
 
 @Composable
 private fun Main(iptvOnly: Boolean = false) {
-    val home = if (iptvOnly) Screen.Iptv else Screen.Home
-    val nav = remember { Nav(home) }
+    val settings = App.settings
+    // Plex and Live TV are two halves of the app, each with its own tabs; it opens in the one used last.
+    val liveTv = iptvOnly || settings.liveTvMode
+    val nav = remember { Nav(if (liveTv) Screen.Iptv else Screen.Home) }
     var sections by remember { mutableStateOf<List<PlexSection>>(emptyList()) }
     // Keep trying until the server answers: the Shield wakes from sleep before Wi-Fi and the server are reachable,
     // and a single failed call used to leave Home empty until the app was restarted.
@@ -121,64 +135,149 @@ private fun Main(iptvOnly: Boolean = false) {
         }
     }
 
-    BackHandler(enabled = nav.stack.size > 1 || nav.top != home) {
-        if (nav.stack.size > 1) nav.pop() else nav.tab(home)
+    fun goHome() {
+        if (liveTv) { iptvSection = Section.Home; if (nav.size > 1 || nav.top != Screen.Iptv) nav.tab(Screen.Iptv) }
+        else nav.tab(Screen.Home)
+    }
+    fun setMode(live: Boolean) {
+        if (!live && iptvOnly) { settings.iptvOnly = false; return }   // Plex leads to signing in
+        if (!iptvOnly) settings.liveTvMode = live
+        if (live) { iptvSection = Section.Home; nav.tab(Screen.Iptv) } else nav.tab(Screen.Home)
     }
 
-    val top = nav.top
-    val isTab = nav.stack.size == 1
-    Box(Modifier.fillMaxSize()) {
-        // Each screen keeps its state while it's on the stack only as long as it's on top; that is enough here.
-        key(nav.stack.size, top) {
-            when (top) {
-                Screen.Home -> HomeScreen(nav, sections)
-                is Screen.Library -> LibraryScreen(nav, top.section)
-                is Screen.Detail -> DetailScreen(nav, top.item)
-                is Screen.Show -> ShowScreen(nav, top.item)
-                is Screen.Person -> PersonScreen(nav, top.person)
-                is Screen.Collection -> CollectionScreen(nav, top.item)
-                Screen.Search -> SearchScreen(nav)
-                Screen.Settings -> SettingsScreen(nav)
-                is Screen.Player -> PlayerScreen(top.item, top.startMs, top.mediaIndex, top.audioId, top.subtitleId) { nav.pop() }
-                Screen.Iptv -> IptvHome(nav)
-                is Screen.IptvMovie -> IptvMovieScreen(nav, top.movie)
-                is Screen.IptvSeries -> IptvSeriesScreen(nav, top.series)
-                is Screen.IptvPlaylist -> IptvPlaylistScreen(nav, top.playlist)
-                is Screen.IptvPlayer -> IptvPlayerScreen(top.play) { nav.pop() }
-            }
+    // Back: closes the page on top; on a tab, goes to that half's Home; on Home, a second Back within 2 s exits.
+    val atHome = nav.size == 1 && (if (liveTv) nav.top == Screen.Iptv && iptvSection == Section.Home else nav.top == Screen.Home)
+    var exitArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(exitArmed) { if (exitArmed) { delay(2000); exitArmed = false } }
+    BackHandler(enabled = !(atHome && exitArmed)) {
+        when {
+            nav.size > 1 -> nav.pop()
+            !atHome -> goHome()
+            else -> exitArmed = true
         }
-        if (isTab) TabBar(nav, sections, iptvOnly)
+    }
+
+    val holder = rememberSaveableStateHolder()
+    nav.onDrop = { holder.removeState(it.id) }
+    val entry = nav.entries.last()
+    val top = entry.screen
+    val isTab = nav.size == 1
+    Box(Modifier.fillMaxSize()) {
+        // Pages under the top one leave the composition but keep their state: their saved state (scroll positions)
+        // in the holder, their loaded data in the entry (retain), and the element that had focus.
+        key(entry.id) {
+            remember { entry.onShow(); 0 }
+            holder.SaveableStateProvider(entry.id) {
+                CompositionLocalProvider(LocalNavEntry provides entry) {
+                    when (top) {
+                        Screen.Home -> HomeScreen(nav, sections)
+                        is Screen.Library -> LibraryScreen(nav, top.section)
+                        is Screen.Detail -> DetailScreen(nav, top.item)
+                        is Screen.Show -> ShowScreen(nav, top.item)
+                        is Screen.Person -> PersonScreen(nav, top.person)
+                        is Screen.Collection -> CollectionScreen(nav, top.item)
+                        Screen.Search -> SearchScreen(nav)
+                        Screen.Settings -> SettingsScreen(nav)
+                        is Screen.Player -> PlayerScreen(top.item, top.startMs, top.mediaIndex, top.audioId, top.subtitleId) { nav.pop() }
+                        Screen.Iptv -> IptvHome(nav)
+                        is Screen.IptvMovie -> IptvMovieScreen(nav, top.movie)
+                        is Screen.IptvSeries -> IptvSeriesScreen(nav, top.series)
+                        is Screen.IptvPlaylist -> IptvPlaylistScreen(nav, top.playlist)
+                        is Screen.IptvPlayer -> IptvPlayerScreen(top.play) { nav.pop() }
+                    }
+                }
+            }
+            LaunchedEffect(Unit) { if (entry.restoring) entry.restoreFocus() }
+        }
+        if (isTab) TabBar(nav, sections, iptvOnly, liveTv, ::setMode)
         if (top !is Screen.Player && top !is Screen.IptvPlayer) IptvReminder(nav)
+        if (exitArmed && atHome) {
+            Box(
+                Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+                    .clip(RoundedCornerShape(50)).background(Color(0xE62C2C34)).padding(horizontal = 26.dp, vertical = 12.dp),
+            ) { T("Press Back again to exit", size = 16.sp, weight = FontWeight.SemiBold) }
+        }
+        GlobalHosts(nav)   // card menu, lumen:// deep links, Play Next updates (ui/GlobalHosts.kt)
     }
 }
 
+private class Tab(val label: String, val selected: Boolean, val open: () -> Unit)
+
 @Composable
-private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean) {
+private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean, liveTv: Boolean, setMode: (Boolean) -> Unit) {
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) { while (true) { now = Date(); delay(15_000) } }
-    val tabs: List<Pair<String, Screen>> = if (iptvOnly) listOf("Live TV" to Screen.Iptv, "Settings" to Screen.Settings)
-        else listOf("Home" to Screen.Home, "Live TV" to Screen.Iptv) +
-            sections.map { it.title to Screen.Library(it) } + listOf("Search" to Screen.Search, "Settings" to Screen.Settings)
-    Box(
+    val top = nav.top
+    // Each half has its own tabs. Live TV's sections are tabs of one page, so they change the section, not the page.
+    val tabs: List<Tab> = if (liveTv) {
+        iptvTabs.map { sec ->
+            Tab(sec.label, top == Screen.Iptv && (iptvSection == sec || (sec == Section.Recordings && iptvSection == Section.Downloads))) {
+                iptvSection = sec
+                if (nav.size > 1 || top != Screen.Iptv) nav.tab(Screen.Iptv)
+            }
+        } + Tab("Settings", top == Screen.Settings) { nav.tab(Screen.Settings) }
+    } else {
+        listOf(Tab("Home", top == Screen.Home) { nav.tab(Screen.Home) }) +
+            sections.map { s -> Tab(s.title, top == Screen.Library(s)) { nav.tab(Screen.Library(s)) } } +
+            listOf(Tab("Search", top == Screen.Search) { nav.tab(Screen.Search) }, Tab("Settings", top == Screen.Settings) { nav.tab(Screen.Settings) })
+    }
+    Row(
         Modifier.fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
             .padding(horizontal = D.gutter, vertical = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Coming up into the bar lands on the current tab, not on whichever tab was focused last.
+        // Coming up into the bar lands on the current tab, not on whichever tab or switch was focused last.
+        // focusProperties.enter runs only when focus comes in from outside the bar, so moving between the tabs
+        // and the Plex | Live TV switch isn't pulled back (an onFocusChanged redirect fired mid-move and did that).
         val current = remember { FocusRequester() }
-        var inBar by remember { mutableStateOf(false) }
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.align(Alignment.CenterStart)
-            .onFocusChanged { if (it.hasFocus && !inBar) runCatching { current.requestFocus() }; inBar = it.hasFocus }) {
-            items(tabs, key = { it.first + it.second.hashCode() }) { (label, screen) ->
-                val selected = nav.top == screen
-                Pill(label, { nav.tab(screen) }, selected = selected, focusRequester = if (selected) current else null)
+        // With no tab selected (e.g. a Plex library that isn't in the bar) no tab holds [current]; fall back to the default.
+        val hasCurrent = tabs.any { it.selected }
+        Row(
+            Modifier.weight(1f)
+                .focusProperties {
+                    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class) @Suppress("DEPRECATION")
+                    enter = { if (hasCurrent) current else FocusRequester.Default }
+                }
+                .focusGroup(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Segmented(listOf("Plex", "Live TV"), if (liveTv) 1 else 0, { setMode(it == 1) })
+            Spacer(Modifier.width(20.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                items(tabs, key = { (if (liveTv) "live-" else "plex-") + it.label }) { t ->
+                    TabPill(t.label, t.open, t.selected, if (t.selected) current else null)
+                }
             }
-            // Without Plex, its tab leads to signing in.
-            if (iptvOnly) item(key = "plex") { Pill("Plex", { App.settings.iptvOnly = false }) }
         }
-        Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-            App.plex.user?.let { T(it.title, size = 15.sp, color = C.dim); Spacer(Modifier.width(18.dp)) }
-            T(SimpleDateFormat("HH:mm", Locale.getDefault()).format(now), size = 20.sp, weight = FontWeight.SemiBold)
+        Spacer(Modifier.width(18.dp))
+        App.plex.user?.let { T(it.title, size = 15.sp, color = C.dim, maxLines = 1); Spacer(Modifier.width(18.dp)) }
+        T(SimpleDateFormat("HH:mm", Locale.getDefault()).format(now), size = 20.sp, weight = FontWeight.SemiBold)
+    }
+}
+
+/** A top bar tab: a slimmer [Pill]. */
+@Composable
+private fun TabPill(label: String, onClick: () -> Unit, selected: Boolean, focusRequester: FocusRequester?) {
+    Focusable(onClick, shape = RoundedCornerShape(50), focusedScale = 1.06f, focusRequester = focusRequester, showBorder = false) { f ->
+        Box(Modifier.background(if (f) C.focus else if (selected) C.surfaceHi else Color.Transparent).padding(horizontal = 16.dp, vertical = 9.dp)) {
+            T(label, size = 16.sp, weight = FontWeight.SemiBold, color = if (f) Color.Black else if (selected) C.text else C.dim, maxLines = 1)
+        }
+    }
+}
+
+/** A compact two-or-more-way switch; the active option is filled, the focused one white. */
+@Composable
+internal fun Segmented(options: List<String>, active: Int, onPick: (Int) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.clip(RoundedCornerShape(50)).background(Color(0x33FFFFFF)).padding(3.dp)) {
+        options.forEachIndexed { i, label ->
+            key(i) {
+                Focusable({ onPick(i) }, shape = RoundedCornerShape(50), focusedScale = 1f, showBorder = false) { f ->
+                    Box(Modifier.background(if (f) C.focus else if (i == active) C.accent else Color.Transparent).padding(horizontal = 16.dp, vertical = 7.dp)) {
+                        T(label, size = 15.sp, weight = FontWeight.SemiBold, color = if (f || i == active) Color.Black else C.dim, maxLines = 1)
+                    }
+                }
+            }
         }
     }
 }

@@ -22,6 +22,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
+import kotlinx.coroutines.launch
+import app.plexhdr.shield.iptv.Text
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -78,7 +83,14 @@ import app.plexhdr.shield.iptv.Recorder
 import app.plexhdr.shield.iptv.ResumeEntry
 import app.plexhdr.shield.iptv.SearchScope
 import app.plexhdr.shield.iptv.Series
+import app.plexhdr.shield.iptv.SearchResult
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.MutableState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -88,9 +100,15 @@ import java.util.Locale
  * and Playlists. INFO, MENU or a long press on a channel or poster opens its options. */
 
 internal enum class Section(val label: String) {
-    Home("Home"), Live("Live TV"), Guide("TV Guide"), Movies("Movies"), Series("Series"), Favorites("Favorites"),
-    Search("Search"), Downloads("Downloads"), Recordings("Recordings"), Playlists("Playlists"),
+    Home("Home"), Live("Live TV"), Guide("Guide"), Movies("Movies"), Series("Series"), Favorites("Favorites"),
+    Search("Search"), Downloads("Downloads"), Recordings("Recordings"), Playlists("Sources"),
 }
+
+/** Live TV's tabs in the top bar. Downloads sit inside Recordings (a Recordings | Downloads switch there). */
+internal val iptvTabs = listOf(
+    Section.Home, Section.Live, Section.Guide, Section.Movies, Section.Series, Section.Favorites, Section.Search,
+    Section.Recordings, Section.Playlists,
+)
 
 /** One row of an options sheet. */
 data class SheetRow(val label: String, val detail: String? = null, val header: Boolean = false, val action: () -> Unit = {})
@@ -117,11 +135,7 @@ private object Ui {
 }
 
 /** True when the section isn't being searched, or any of the values contains its search text. */
-private fun hits(sec: Section, vararg values: String?): Boolean {
-    val q = Ui.sq[sec]?.trim()?.lowercase().orEmpty()
-    if (q.isEmpty()) return true
-    return values.any { it != null && it.lowercase().contains(q) }
-}
+private fun hits(sec: Section, vararg values: String?): Boolean = Text.matches(Text.words(Ui.sq[sec].orEmpty()), *values)
 private fun searching(sec: Section) = !Ui.sq[sec].isNullOrBlank()
 
 /** The search field at the top of a section. It looks through the whole section, not just the open group. */
@@ -151,6 +165,31 @@ private fun SectionSearch(sec: Section, hint: String) {
 @Composable
 private fun NoMatch(sec: Section) = T("Nothing matches “${Ui.sq[sec]?.trim()}”.", Modifier.padding(D.gutter), color = C.dim)
 
+/**
+ * [compute] on a background thread whenever a key changes; null until the first result. The previous result stays on
+ * screen while a new one is computed, so filtering 30 000 channels never blocks a D-pad press.
+ */
+@Composable
+private fun <T> rememberOffMain(vararg keys: Any?, compute: () -> T): T? {
+    val v by produceState<T?>(null, *keys) { value = withContext(Dispatchers.Default) { compute() } }
+    return v
+}
+
+/** [value] once it has stopped changing for [ms] (at once when cleared), so a search doesn't run on every letter. */
+@Composable
+private fun debounced(value: String, ms: Long = 250): String {
+    var d by remember { mutableStateOf(value) }
+    LaunchedEffect(value) { if (value.isNotEmpty()) delay(ms); d = value }
+    return d
+}
+
+/** The section's search text, trimmed and debounced. */
+@Composable
+private fun sectionQuery(sec: Section): String = debounced(Ui.sq[sec]?.trim().orEmpty())
+
+/** Search match: every word of [q] in one of the values, ignoring case, accents and Turkish letters (see [Text.fold]). */
+private fun has(q: String, vararg values: String?) = Text.matches(Text.words(q), *values)
+
 data class IptvInput(val title: String, val value: String, val number: Boolean = false, val secret: Boolean = false, val done: (String) -> Unit)
 
 private fun clock(t: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(t))
@@ -176,15 +215,20 @@ private fun withPin(g: IptvGroup?, then: () -> Unit) {
 
 /* ---------------- frame ---------------- */
 
+/** The open Live TV section, picked with the top bar's tabs in Live TV mode. */
+internal var iptvSection: Section
+    get() = Ui.section
+    set(value) { Ui.section = value }
+
+/** Inside Recordings: true shows downloads instead. */
+private var showDownloads by mutableStateOf(false)
+
 @Composable
 fun IptvHome(nav: Nav) {
     val s = App.iptv
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(top = 76.dp)) {
-            LazyRow(contentPadding = PaddingValues(horizontal = D.gutter, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(Section.entries.toList()) { sec -> Pill(sec.label, { Ui.section = sec }, selected = sec == Ui.section) }
-            }
-            Spacer(Modifier.height(8.dp))
+        // The sections are the top bar's tabs; the page starts below the bar.
+        Column(Modifier.fillMaxSize().padding(top = 88.dp)) {
             if (s.playlists.isEmpty() && Ui.section !in setOf(Section.Playlists, Section.Downloads, Section.Recordings)) Welcome(nav)
             else when (Ui.section) {
                 Section.Home -> HomeSection(nav)
@@ -194,8 +238,11 @@ fun IptvHome(nav: Nav) {
                 Section.Series -> LibrarySection(nav, movies = false)
                 Section.Favorites -> FavoritesSection(nav)
                 Section.Search -> SearchSection(nav)
-                Section.Downloads -> JobsSection(nav, Recorder.Kind.Download)
-                Section.Recordings -> JobsSection(nav, Recorder.Kind.Recording)
+                Section.Downloads, Section.Recordings -> {
+                    Segmented(listOf("Recordings", "Downloads"), if (showDownloads) 1 else 0, { showDownloads = it == 1 },
+                        Modifier.padding(start = D.gutter, bottom = 10.dp))
+                    JobsSection(nav, if (showDownloads) Recorder.Kind.Download else Recorder.Kind.Recording)
+                }
                 Section.Playlists -> PlaylistsSection(nav)
             }
         }
@@ -266,7 +313,7 @@ private fun IptvPoster(title: String, sub: String?, image: String?, id: String, 
             Box(Modifier.fillMaxSize().background(C.surface), contentAlignment = Alignment.Center) {
                 T(title, Modifier.padding(10.dp), size = 14.sp, color = C.dim, align = TextAlign.Center, maxLines = 4)
             }
-            if (image != null) Img(image, Modifier.fillMaxSize())
+            if (image != null) PosterImage(image, Modifier.fillMaxSize())
             val p = s.progress(id)
             if (p > 0) ProgressBar(p, Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp))
             if (s.isFavorite(id)) T("★", Modifier.align(Alignment.TopEnd).padding(6.dp), size = 16.sp, color = C.accent)
@@ -275,6 +322,14 @@ private fun IptvPoster(title: String, sub: String?, image: String?, id: String, 
         T(title, size = 13.sp, color = C.dim, maxLines = 1)
         if (!sub.isNullOrEmpty()) T(sub, size = 11.sp, color = C.faint, maxLines = 1)
     }
+}
+
+/** A poster decoded at poster size (providers often serve 1000+ px covers), so grids scroll without decode stalls. */
+@Composable
+private fun PosterImage(url: String, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val req = remember(url) { ImageRequest.Builder(ctx).data(url).size(300, 450).build() }
+    AsyncImage(model = req, contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
 }
 
 @Composable
@@ -312,9 +367,20 @@ private fun channelOptions(nav: Nav, ch: Channel) {
 
 private fun groupRows(g: IptvGroup): List<SheetRow> {
     val s = App.iptv
-    val rows = arrayListOf(SheetRow("Hide Group") { s.setHidden(g, true) })
+    val rows = ArrayList<SheetRow>()
+    // Favourite groups are listed first, in their own order. Hide sits last, away from a quick second press of Select.
+    if (s.isPinned(g)) {
+        rows += SheetRow("Remove from Favorite Groups") { s.setPinned(g, false) }
+        rows += SheetRow("Move Up") { s.movePinned(g, -1) }
+        rows += SheetRow("Move Down") { s.movePinned(g, 1) }
+        rows += SheetRow("Move to Top") { s.movePinnedToTop(g) }
+    } else {
+        rows += SheetRow("Add to Favorite Groups", "Listed first") { s.setPinned(g, true) }
+        rows += SheetRow("Move to Top", "Adds it to Favorite Groups, first") { s.movePinnedToTop(g) }
+    }
     rows += if (s.pin.isNotEmpty()) SheetRow(if (s.isLocked(g)) "Unlock Group" else "Lock Group with PIN") { s.setLocked(g, !s.isLocked(g)) }
     else SheetRow("Lock Group with PIN", "Set a PIN in Playlists first")
+    rows += SheetRow("Hide Group", "Show it again from Sources → Hidden Groups") { s.setHidden(g, true) }
     return rows
 }
 
@@ -337,11 +403,12 @@ private fun <E> IShelf(title: String, note: String?, list: List<E>, key: (E) -> 
 @Composable
 private fun HomeSection(nav: Nav) {
     val s = App.iptv
-    val trending by produceState<IptvStore.Trending?>(null, s.movies.size, s.series.size) { value = s.trending() }
-    val resume = s.continueEntries()
-    val recent = s.recentChannels()
-    val hot = s.trendingChannels()
-    val favs = s.favoriteChannels()
+    val trending by produceState<IptvStore.Trending?>(null, s.movies, s.series) { value = s.trending() }
+    val chs = s.channels
+    val resume = remember(s.resume, s.positions, s.movies, s.series) { s.continueEntries() }
+    val recent = remember(s.recents, chs) { s.recentChannels() }
+    val hot = remember(chs) { s.trendingChannels() }
+    val favs = remember(s.favorites, chs) { s.favoriteChannels() }
     LazyColumn(Modifier.fillMaxSize()) {
         item { IShelf("Continue Watching", null, resume, { it.id }) { r -> ResumeCard(r, nav) } }
         item { IShelf("Recently Watched Channels", null, recent.take(20), { it.id }) { ChannelCard(it, recent, nav) } }
@@ -371,15 +438,16 @@ private fun ResumeCard(r: ResumeEntry, nav: Nav) {
 
 /* ---------------- Live TV ---------------- */
 
-private fun lineup(groupId: String): List<Channel> {
+/** The channels of a Live TV group with the quality filter applied. Runs off the main thread (see LiveSection). */
+private fun lineup(groupId: String, tags: Set<QTag>): List<Channel> {
     val s = App.iptv
     var l = when (groupId) {
         "all" -> s.channels
         "favorites" -> s.favoriteChannels()
         "recents" -> s.recentChannels()
-        else -> s.groups(IptvGroup.Kind.Live).firstOrNull { it.id == groupId }?.let { s.channelsIn(it) } ?: s.channels
+        else -> s.group(IptvGroup.Kind.Live, groupId)?.let { s.channelsIn(it) } ?: s.channels
     }
-    if (Ui.tagFilter.isNotEmpty()) l = l.filter { s.tags(it).containsAll(Ui.tagFilter) }
+    if (tags.isNotEmpty()) l = l.filter { s.tags(it).containsAll(tags) }
     return l
 }
 
@@ -392,9 +460,10 @@ private fun TagRow(selected: Set<QTag>, onChange: (Set<QTag>) -> Unit) {
 
 @Composable
 private fun ListRow(text: String, sub: String? = null, on: Boolean = false, height: Dp = 54.dp, leading: (@Composable () -> Unit)? = null,
-                    trailing: (@Composable () -> Unit)? = null, onFocus: () -> Unit = {}, onOptions: (() -> Unit)? = null, onClick: () -> Unit) {
+                    trailing: (@Composable () -> Unit)? = null, onFocus: () -> Unit = {}, onOptions: (() -> Unit)? = null,
+                    focusRequester: FocusRequester? = null, onClick: () -> Unit) {
     Focusable(onClick, Modifier.fillMaxWidth().then(if (onOptions != null) Modifier.onMenu(onOptions) else Modifier), RoundedCornerShape(10.dp), 1.02f,
-        onFocused = onFocus, onLongClick = onOptions, showBorder = false) { f ->
+        focusRequester = focusRequester, onFocused = onFocus, onLongClick = onOptions, showBorder = false) { f ->
         Row(Modifier.fillMaxWidth().height(height).background(if (f) C.focus else if (on) Color(0x22FFFFFF) else Color.Transparent).padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically) {
             leading?.invoke()
@@ -410,71 +479,189 @@ private fun ListRow(text: String, sub: String? = null, on: Boolean = false, heig
 @Composable
 private fun LiveSection(nav: Nav) {
     val s = App.iptv
-    val list = if (searching(Section.Live)) lineup("all").filter { hits(Section.Live, it.name, it.group, s.nowNext(it).first?.title) } else lineup(Ui.liveGroup)
-    var focused by remember { mutableStateOf<Channel?>(null) }
+    val q = sectionQuery(Section.Live)
+    val group = Ui.liveGroup
+    val tags = Ui.tagFilter
+    // Everything the list depends on, read here so a change recomputes it (off the main thread).
+    val chs = s.channels; val favs = s.favorites; val recs = s.recents
+    val guide = if (q.isNotEmpty()) s.guide else null
+    val measured = if (tags.isNotEmpty()) s.measured else null
+    val computed = rememberOffMain(group, tags, q, chs, favs, recs, guide, measured) {
+        if (q.isNotEmpty()) lineup("all", tags).filter { has(q, it.name, it.group, s.nowNext(it).first?.title) } else lineup(group, tags)
+    }
+    val list = computed.orEmpty()
+    // Focus lives in its own state, read only by the preview pane: moving through the list doesn't recompose the list.
+    val focused = remember { mutableStateOf<Channel?>(null) }
+    // Groups: favourites first, then A–Z. A search also narrows the groups to those whose name matches.
+    val allGroups = remember(s.channels, s.pinnedGroups, s.hidden) { s.orderedGroups(IptvGroup.Kind.Live) }
+    val groups = remember(allGroups, q) { if (q.isEmpty()) allGroups else Text.words(q).let { w -> allGroups.filter { Text.matches(w, it.name) } } }
+    val fixed = if (q.isEmpty()) listOf("all" to "All Channels", "favorites" to "Favorites", "recents" to "Recently Watched") else emptyList()
+    val groupList = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var az by remember { mutableStateOf(false) }
+    var azAt by remember { mutableStateOf(0) }
+    // The letter of the group that had focus when Left was pressed (null on the fixed rows and favourites).
+    var focusedLetter by remember { mutableStateOf<String?>(null) }
+    var jumpIndex by remember { mutableStateOf(-1) }
+    val jumpFocus = remember { FocusRequester() }
+    val azFocus = remember { FocusRequester() }
+    val pinnedCount = groups.count { s.isPinned(it) }
+    // The letters that start a group after the favourites ("#" for digits and symbols).
+    val letters = remember(groups, pinnedCount) {
+        groups.drop(pinnedCount).map { azLetter(it.name) }.distinct()
+    }
+    fun focusRow(index: Int) {
+        jumpIndex = index
+        scope.launch {
+            groupList.scrollToItem((index - 2).coerceAtLeast(0))
+            repeat(20) { if (runCatching { jumpFocus.requestFocus() }.isSuccess) return@launch; delay(32) }
+        }
+    }
+    fun closeAz(letter: String?) {
+        az = false
+        val i = if (letter == null) -1 else groups.indices.firstOrNull { it >= pinnedCount && azLetter(groups[it].name) == letter } ?: -1
+        val row = if (i >= 0) fixed.size + i
+            else (groups.indexOfFirst { it.id == Ui.liveGroup }.takeIf { it >= 0 }?.let { fixed.size + it } ?: fixed.indexOfFirst { it.first == Ui.liveGroup }.coerceAtLeast(0))
+        focusRow(row)
+    }
+    BackHandler(enabled = az) { closeAz(null) }
+    // Favouriting or moving a group moves its row: keep focus on it instead of losing it to the top bar.
+    var focusedGroupId by remember { mutableStateOf<String?>(null) }
+    var seenPins by remember { mutableStateOf(s.pinnedGroups) }
+    LaunchedEffect(groups) {
+        if (s.pinnedGroups == seenPins) return@LaunchedEffect
+        seenPins = s.pinnedGroups
+        val i = groups.indexOfFirst { it.id == focusedGroupId }
+        if (i >= 0) { delay(150); focusRow(fixed.size + i) }
+    }
+    LaunchedEffect(az) { if (az) repeat(20) { if (runCatching { azFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(32) } }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = D.gutter), verticalAlignment = Alignment.CenterVertically) {
-            SectionSearch(Section.Live, "channels and what's on")
+            SectionSearch(Section.Live, "groups, channels and what's on")
             Box(Modifier.weight(1f)) { TagRow(Ui.tagFilter) { Ui.tagFilter = it } }
         }
         Row(Modifier.fillMaxSize().padding(start = D.gutter, end = D.gutter, top = 8.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            LazyColumn(Modifier.width(250.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF)).padding(6.dp)) {
-                items(listOf("all" to "All Channels", "favorites" to "Favorites", "recents" to "Recently Watched")) { (id, label) ->
-                    ListRow(label, on = Ui.liveGroup == id, height = 44.dp) { Ui.liveGroup = id }
+            if (az) {
+                // A–Z: Left in the group list opens it; Select jumps to the first group with that letter, Back or Right closes it.
+                val current = focusedLetter ?: groups.drop(pinnedCount).firstOrNull { it.id == Ui.liveGroup }?.let { azLetter(it.name) }
+                LazyColumn(
+                    Modifier.width(64.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x22FFFFFF)).padding(4.dp)
+                        .onPreviewKeyEvent { e ->
+                            if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (e.key) {
+                                Key.DirectionRight -> { closeAz(null); true }
+                                // Focus stays in the strip while it is open.
+                                Key.DirectionLeft -> true
+                                Key.DirectionUp -> azAt <= 0
+                                Key.DirectionDown -> azAt >= letters.lastIndex
+                                else -> false
+                            }
+                        },
+                    state = rememberLazyListState(((letters.indexOf(current)).coerceAtLeast(0) - 3).coerceAtLeast(0)),
+                ) {
+                    itemsIndexed(letters, key = { _, l -> l }) { i, l ->
+                        Focusable({ closeAz(l) }, Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), 1.06f, onFocused = { azAt = i },
+                            focusRequester = if (l == (current ?: letters.firstOrNull())) azFocus else null, showBorder = false) { f ->
+                            Box(Modifier.fillMaxWidth().height(40.dp).background(if (f) C.focus else Color.Transparent), contentAlignment = Alignment.Center) {
+                                T(l, size = 18.sp, weight = FontWeight.Bold, color = if (f) Color.Black else C.text)
+                            }
+                        }
+                    }
                 }
-                items(s.groups(IptvGroup.Kind.Live), key = { it.id }) { g ->
-                    ListRow(g.name + if (s.isLocked(g)) (if (s.unlocked) "  🔓" else "  🔒") else "", on = Ui.liveGroup == g.id, height = 44.dp,
-                        leading = { SourceDot(g.playlistId) }, onOptions = { Ui.sheet = Sheet(g.name, groupRows(g)) }) {
-                        withPin(g) { Ui.liveGroup = g.id }
+            }
+            LazyColumn(
+                Modifier.width(250.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF)).padding(6.dp)
+                    .onPreviewKeyEvent { e ->
+                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft && !az && letters.isNotEmpty()) { az = true; true } else false
+                    },
+                state = groupList,
+            ) {
+                items(fixed, key = { it.first }) { (id, label) ->
+                    val i = fixed.indexOfFirst { it.first == id }
+                    ListRow(label, on = Ui.liveGroup == id, height = 44.dp, onFocus = { focusedLetter = null },
+                        focusRequester = if (i == jumpIndex) jumpFocus else null) { Ui.liveGroup = id }
+                }
+                if (q.isNotEmpty()) item(key = "groupsHeader") {
+                    T(if (groups.isEmpty()) "No group matches." else if (groups.size == 1) "1 group matches" else "${groups.size} groups match", Modifier.padding(10.dp), size = 13.sp, color = C.dim)
+                }
+                itemsIndexed(groups, key = { _, g -> g.id }, contentType = { _, _ -> "group" }) { i, g ->
+                    val pinned = i < pinnedCount
+                    ListRow((if (pinned) "★ " else "") + g.name + if (s.isLocked(g)) (if (s.unlocked) "  🔓" else "  🔒") else "", on = Ui.liveGroup == g.id, height = 44.dp,
+                        leading = { SourceDot(g.playlistId) }, onOptions = { Ui.sheet = Sheet(g.name, groupRows(g)) },
+                        onFocus = { focusedLetter = if (pinned) null else azLetter(g.name); focusedGroupId = g.id },
+                        focusRequester = if (fixed.size + i == jumpIndex) jumpFocus else null) {
+                        // Picking a group ends a search, so its channels show.
+                        withPin(g) { Ui.liveGroup = g.id; if (q.isNotEmpty()) Ui.sq[Section.Live] = "" }
                     }
                 }
             }
             LazyColumn(Modifier.weight(1f).fillMaxHeight()) {
-                if (searching(Section.Live)) item { Header("${list.size} channels match “${Ui.sq[Section.Live]?.trim()}”") }
-                if (list.isEmpty()) item { T(if (s.isLoading()) "Loading channels…" else if (searching(Section.Live)) "No channel matches." else "No channels here.", Modifier.padding(16.dp), color = C.dim) }
-                items(list, key = { it.id }) { ch ->
-                    val nn = s.nowNext(ch)
-                    val now = nn.first
-                    ListRow(ch.name, now?.title, height = 60.dp,
-                        leading = {
-                            T(ch.number?.toString() ?: "", Modifier.width(44.dp), size = 13.sp, color = C.faint)
-                            ChannelLogo(ch, Modifier.size(64.dp, 36.dp))
-                            Spacer(Modifier.width(12.dp))
-                        },
-                        trailing = {
-                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-                                if (App.recorder.recordingOf(ch) != null) T("●", size = 14.sp, color = C.bad)
-                                if (ch.catchup != null) T("⟲", size = 14.sp, color = C.dim)
-                                if (s.isFavorite(ch.id)) T("★", size = 14.sp, color = C.accent)
-                                s.tags(ch).forEach { QualityBadge(it) }
-                            }
-                        },
-                        onFocus = { focused = ch }, onOptions = { channelOptions(nav, ch) },
-                    ) { nav.push(Screen.IptvPlayer(IptvPlay.Live(ch, list))) }
+                if (q.isNotEmpty() && computed != null) item(key = "header") { Header("${list.size} channels match “$q”") }
+                if (computed != null && list.isEmpty()) item(key = "empty") {
+                    T(if (s.isLoading()) "Loading channels…" else if (q.isNotEmpty()) "No channel matches." else "No channels here.", Modifier.padding(16.dp), color = C.dim)
+                }
+                items(list, key = { it.id }, contentType = { "channel" }) { ch ->
+                    LiveRow(ch, nav, focused) { nav.push(Screen.IptvPlayer(IptvPlay.Live(ch, list))) }
                 }
             }
-            Column(Modifier.width(420.dp)) {
-                ChannelPreview(focused, Modifier.size(420.dp, 236.dp))
-                Spacer(Modifier.height(14.dp))
-                focused?.let { ch ->
-                    val (now, next) = s.nowNext(ch)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ChannelLogo(ch, Modifier.size(84.dp, 47.dp), 16.sp)
-                        Spacer(Modifier.width(14.dp))
-                        T(ch.name, Modifier.weight(1f), size = 20.sp, weight = FontWeight.Bold, maxLines = 2)
-                    }
-                    now?.let {
-                        Spacer(Modifier.height(6.dp))
-                        T(it.title, size = 17.sp, maxLines = 2)
-                        T("${clock(it.start)} – ${clock(it.end)}", size = 13.sp, color = C.dim)
-                        it.desc?.let { d -> Spacer(Modifier.height(6.dp)); T(d, size = 13.sp, color = C.faint, maxLines = 5) }
-                    }
-                    next?.let { T("Next ${clock(it.start)}  ${it.title}", Modifier.padding(top = 8.dp), size = 13.sp, color = C.dim, maxLines = 1) }
-                }
-                Spacer(Modifier.height(16.dp))
-                T("Select: watch   ·   Menu or hold Select: favourite, rename, record, hide, lock", size = 12.sp, color = C.faint)
-            }
+            LivePreview(focused, Modifier.width(420.dp))
         }
+    }
+}
+
+/** The A–Z letter a group files under: its first letter or digit, folded ("Türkiye" under T); "#" for digits. */
+private fun azLetter(name: String): String {
+    val c = Text.fold(name).firstOrNull() ?: return "#"
+    return if (c.isLetter()) c.uppercase() else "#"
+}
+
+@Composable
+private fun LiveRow(ch: Channel, nav: Nav, focused: MutableState<Channel?>, onClick: () -> Unit) {
+    val s = App.iptv
+    val now = s.nowNext(ch).first
+    ListRow(ch.name, now?.title, height = 60.dp,
+        leading = {
+            T(ch.number?.toString() ?: "", Modifier.width(44.dp), size = 13.sp, color = C.faint)
+            ChannelLogo(ch, Modifier.size(64.dp, 36.dp))
+            Spacer(Modifier.width(12.dp))
+        },
+        trailing = {
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (App.recorder.recordingOf(ch) != null) T("●", size = 14.sp, color = C.bad)
+                if (ch.catchup != null) T("⟲", size = 14.sp, color = C.dim)
+                if (s.isFavorite(ch.id)) T("★", size = 14.sp, color = C.accent)
+                s.tags(ch).forEach { QualityBadge(it) }
+            }
+        },
+        onFocus = { focused.value = ch }, onOptions = { channelOptions(nav, ch) }, onClick = onClick,
+    )
+}
+
+/** The preview pane: the only part of Live TV that recomposes when focus moves. */
+@Composable
+private fun LivePreview(focusedState: MutableState<Channel?>, modifier: Modifier) {
+    val s = App.iptv
+    val focused = focusedState.value
+    Column(modifier) {
+        ChannelPreview(focused, Modifier.size(420.dp, 236.dp))
+        Spacer(Modifier.height(14.dp))
+        focused?.let { ch ->
+            val (now, next) = s.nowNext(ch)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChannelLogo(ch, Modifier.size(84.dp, 47.dp), 16.sp)
+                Spacer(Modifier.width(14.dp))
+                T(ch.name, Modifier.weight(1f), size = 20.sp, weight = FontWeight.Bold, maxLines = 2)
+            }
+            now?.let {
+                Spacer(Modifier.height(6.dp))
+                T(it.title, size = 17.sp, maxLines = 2)
+                T("${clock(it.start)} – ${clock(it.end)}", size = 13.sp, color = C.dim)
+                it.desc?.let { d -> Spacer(Modifier.height(6.dp)); T(d, size = 13.sp, color = C.faint, maxLines = 5) }
+            }
+            next?.let { T("Next ${clock(it.start)}  ${it.title}", Modifier.padding(top = 8.dp), size = 13.sp, color = C.dim, maxLines = 1) }
+        }
+        Spacer(Modifier.height(16.dp))
+        T("Select: watch   ·   Menu or hold Select: favourite, rename, record, hide, lock", size = 12.sp, color = C.faint)
     }
 }
 
@@ -495,23 +682,28 @@ private fun GuideSection(nav: Nav) {
     if (Ui.guideStart == 0L) Ui.guideStart = System.currentTimeMillis() / 1_800_000L * 1_800_000L - 1_800_000L
     val start = Ui.guideStart
     val end = start + (HOURS * 3_600_000).toLong()
-    val chans = when (Ui.guideGroup) {
-        "all" -> s.channels
-        "favorites" -> s.favoriteChannels()
-        else -> s.groups(IptvGroup.Kind.Live).firstOrNull { it.id == Ui.guideGroup }?.let { s.channelsIn(it) } ?: s.channels
-    }.let { all ->
-        if (!searching(Section.Guide)) all
+    val q = sectionQuery(Section.Guide)
+    val group = Ui.guideGroup
+    val chs = s.channels; val favs = s.favorites
+    val guide = if (q.isNotEmpty()) s.guide else null
+    val searchFrom = if (q.isNotEmpty()) start else 0L
+    val chans = rememberOffMain(group, q, chs, favs, guide, searchFrom) {
+        if (q.isEmpty()) when (group) {
+            "all" -> chs
+            "favorites" -> s.favoriteChannels()
+            else -> s.group(IptvGroup.Kind.Live, group)?.let { s.channelsIn(it) } ?: chs
+        }
         // Channels whose name matches, or that show a matching programme within a day of the guide's start.
-        else s.channels.filter { ch -> hits(Section.Guide, ch.name) || s.programmes(ch, start, start + 86_400_000L).any { hits(Section.Guide, it.title, it.episode, it.category) } }
-    }
+        else chs.filter { ch -> has(q, ch.name) || s.programmes(ch, searchFrom, searchFrom + 86_400_000L).any { has(q, it.title, it.episode, it.category) } }
+    }.orEmpty()
     fun shift(dir: Int) {
-        val maxDays = s.channels.mapNotNull { it.catchup?.days }.maxOrNull() ?: 1
+        val maxDays = s.maxCatchupDays
         val now = System.currentTimeMillis()
         Ui.guideStart = (Ui.guideStart + (dir * HOURS * 0.8f * 3_600_000).toLong()).coerceIn(now - maxDays * 86_400_000L, now + 4 * 86_400_000L)
     }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            val name = when (Ui.guideGroup) { "all" -> "All Channels"; "favorites" -> "Favorites"; else -> s.groups(IptvGroup.Kind.Live).firstOrNull { it.id == Ui.guideGroup }?.name ?: "All Channels" }
+            val name = when (Ui.guideGroup) { "all" -> "All Channels"; "favorites" -> "Favorites"; else -> s.group(IptvGroup.Kind.Live, Ui.guideGroup)?.name ?: "All Channels" }
             Pill("▤ $name", {
                 val gs = s.groups(IptvGroup.Kind.Live)
                 Ui.sheet = Sheet("Channels", listOf(SheetRow("All Channels") { Ui.guideGroup = "all" }, SheetRow("Favorites") { Ui.guideGroup = "favorites" }) +
@@ -533,7 +725,7 @@ private fun GuideSection(nav: Nav) {
             }
             return@Column
         }
-        if (chans.isEmpty() && searching(Section.Guide)) { NoMatch(Section.Guide); return@Column }
+        if (chans.isEmpty() && q.isNotEmpty()) { NoMatch(Section.Guide); return@Column }
         val chW = 220.dp
         val perHour = 300.dp
         Row(Modifier.padding(start = D.gutter + chW, top = 10.dp)) {
@@ -542,7 +734,7 @@ private fun GuideSection(nav: Nav) {
         val now = System.currentTimeMillis()
         Box(Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = D.gutter, end = D.gutter, top = 6.dp, bottom = 40.dp)) {
-                items(chans.take(300), key = { it.id }) { ch ->
+                items(if (chans.size > 300) chans.subList(0, 300) else chans, key = { it.id }, contentType = { "guide-row" }) { ch ->
                     Row(Modifier.height(56.dp).padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.width(chW), verticalAlignment = Alignment.CenterVertically) {
                             ChannelLogo(ch, Modifier.size(48.dp, 28.dp), 11.sp)
@@ -618,7 +810,34 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
     fun setGroup(v: String) { if (movies) Ui.movieGroup = v else Ui.seriesGroup = v }
     val sorts = listOf("added" to "Recently Added", "name" to "Name", "rating" to "Rating", "year" to "Year")
     val sec = if (movies) Section.Movies else Section.Series
-    val find = searching(sec)
+    val q = sectionQuery(sec)
+    val find = q.isNotEmpty()
+    val sort = Ui.sort
+    val group = groups.firstOrNull { it.id == gid }
+    val favs = s.favorites
+    // Filtering and sorting 50 000 titles happens off the main thread, once per change, not on every recomposition.
+    val all: List<Any> = if (movies) s.movies else s.series
+    val shown = rememberOffMain(movies, gid, sort, q, all, favs, group) {
+        if (movies) {
+            val list = if (find) s.movies.filter { has(q, it.name, it.group, it.year?.toString()) }
+                else when (gid) { "all" -> s.movies; "favorites" -> s.favoriteMovies(); else -> group?.let { s.moviesIn(it) } ?: s.movies }
+            when (sort) {
+                "name" -> list.sortedBy { it.name.lowercase() }
+                "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
+                "year" -> list.sortedByDescending { it.year ?: 0 }
+                else -> list.sortedByDescending { it.added ?: 0 }
+            }
+        } else {
+            val list = if (find) s.series.filter { has(q, it.name, it.group, it.year?.toString()) }
+                else when (gid) { "all" -> s.series; "favorites" -> s.favoriteSeries(); else -> group?.let { s.seriesIn(it) } ?: s.series }
+            when (sort) {
+                "name" -> list.sortedBy { it.name.lowercase() }
+                "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
+                "year" -> list.sortedByDescending { it.year ?: 0 }
+                else -> list
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             val name = when (gid) { "all" -> "All"; "favorites" -> "Favorites"; else -> groups.firstOrNull { it.id == gid }?.name ?: "All" }
@@ -632,29 +851,11 @@ private fun LibrarySection(nav: Nav, movies: Boolean) {
             SectionSearch(sec, if (movies) "movies" else "series")
         }
         Spacer(Modifier.height(6.dp))
-        if (movies) {
-            var list = if (find) s.movies.filter { hits(sec, it.name, it.group, it.year?.toString()) }
-                else when (gid) { "all" -> s.movies; "favorites" -> s.favoriteMovies(); else -> groups.firstOrNull { it.id == gid }?.let { s.moviesIn(it) } ?: s.movies }
-            if (find && list.isEmpty()) { NoMatch(sec); return@Column }
-            list = when (Ui.sort) {
-                "name" -> list.sortedBy { it.name.lowercase() }
-                "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
-                "year" -> list.sortedByDescending { it.year ?: 0 }
-                else -> list.sortedByDescending { it.added ?: 0 }
-            }
-            Grid(list, { it.id }) { MoviePoster(it, nav) }
-        } else {
-            var list = if (find) s.series.filter { hits(sec, it.name, it.group, it.year?.toString()) }
-                else when (gid) { "all" -> s.series; "favorites" -> s.favoriteSeries(); else -> groups.firstOrNull { it.id == gid }?.let { s.seriesIn(it) } ?: s.series }
-            if (find && list.isEmpty()) { NoMatch(sec); return@Column }
-            list = when (Ui.sort) {
-                "name" -> list.sortedBy { it.name.lowercase() }
-                "rating" -> list.sortedByDescending { it.rating ?: 0.0 }
-                "year" -> list.sortedByDescending { it.year ?: 0 }
-                else -> list
-            }
-            Grid(list, { it.id }) { SeriesPoster(it, nav) }
-        }
+        if (shown == null) return@Column
+        if (find && shown.isEmpty()) { NoMatch(sec); return@Column }
+        @Suppress("UNCHECKED_CAST")
+        if (movies) Grid(shown as List<Movie>, { it.id }) { MoviePoster(it, nav) }
+        else Grid(shown as List<Series>, { it.id }) { SeriesPoster(it, nav) }
     }
 }
 
@@ -667,7 +868,7 @@ private fun <E> Grid(list: List<E>, key: (E) -> Any, content: @Composable (E) ->
         verticalArrangement = Arrangement.spacedBy(26.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        items(list.size, key = { key(list[it]) }) { content(list[it]) }
+        items(list.size, key = { key(list[it]) }, contentType = { 0 }) { content(list[it]) }
     }
 }
 
@@ -700,7 +901,7 @@ fun IptvMovieScreen(nav: Nav, m: Movie) {
         }
         IptvOverlays()
     }
-    LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
+    FocusOnShow(play)
 }
 
 @Composable
@@ -743,7 +944,7 @@ fun IptvSeriesScreen(nav: Nav, x: Series) {
         }
         IptvOverlays()
     }
-    LaunchedEffect(resumeEp?.id) { delay(80); runCatching { play.requestFocus() } }
+    FocusOnShow(play, resumeEp?.id, delayMs = 80)
 }
 
 @Composable
@@ -780,11 +981,12 @@ private fun FavoritesSection(nav: Nav) {
         Spacer(Modifier.height(8.dp))
         when (Ui.favTab) {
             0 -> {
-                val chans = s.favoriteChannels().filter { hits(Section.Favorites, it.name, it.group, s.nowNext(it).first?.title) }
+                val q = Ui.sq[Section.Favorites]?.trim().orEmpty()
+                val chans = remember(s.favorites, s.channels, s.guide, q) { s.favoriteChannels().filter { has(q, it.name, it.group, s.nowNext(it).first?.title) } }
                 if (chans.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites)
                 else if (chans.isEmpty()) T("No favourite channels yet. Press Menu (or hold Select) on a channel and choose Add to Favorites.", Modifier.padding(D.gutter), color = C.dim)
                 else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = D.gutter, vertical = 8.dp)) {
-                    items(chans, key = { it.id }) { ch ->
+                    items(chans, key = { it.id }, contentType = { "channel" }) { ch ->
                         ListRow(ch.name, s.nowNext(ch).first?.title, height = 60.dp,
                             leading = { ChannelLogo(ch, Modifier.size(64.dp, 36.dp)); Spacer(Modifier.width(12.dp)) },
                             trailing = { Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) { s.tags(ch).forEach { QualityBadge(it) } } },
@@ -792,10 +994,10 @@ private fun FavoritesSection(nav: Nav) {
                     }
                 }
             }
-            1 -> s.favoriteMovies().filter { hits(Section.Favorites, it.name, it.group) }.let { l ->
+            1 -> remember(s.favorites, s.movies, Ui.sq[Section.Favorites]) { s.favoriteMovies().filter { hits(Section.Favorites, it.name, it.group) } }.let { l ->
                 if (l.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites) else Grid(l, { it.id }) { MoviePoster(it, nav) }
             }
-            else -> s.favoriteSeries().filter { hits(Section.Favorites, it.name, it.group) }.let { l ->
+            else -> remember(s.favorites, s.series, Ui.sq[Section.Favorites]) { s.favoriteSeries().filter { hits(Section.Favorites, it.name, it.group) } }.let { l ->
                 if (l.isEmpty() && searching(Section.Favorites)) NoMatch(Section.Favorites) else Grid(l, { it.id }) { SeriesPoster(it, nav) }
             }
         }
@@ -809,7 +1011,10 @@ private fun SearchSection(nav: Nav) {
     val s = App.iptv
     var debounced by remember { mutableStateOf(Ui.query) }
     LaunchedEffect(Ui.query) { delay(350); debounced = Ui.query }
-    val r = remember(debounced, Ui.searchTags, Ui.scope, s.channels, s.guide) { s.search(debounced, Ui.searchTags, Ui.scope) }
+    val tags = Ui.searchTags; val scope = Ui.scope
+    val r = rememberOffMain(debounced, tags, scope, s.channels, s.movies, s.series, s.guide, if (tags.isNotEmpty()) s.measured else null) {
+        s.search(debounced, tags, scope)
+    } ?: SearchResult()
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 60.dp)) {
         item {
             Row(Modifier.padding(horizontal = D.gutter), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -827,7 +1032,7 @@ private fun SearchSection(nav: Nav) {
         item { Spacer(Modifier.height(6.dp)); TagRow(Ui.searchTags) { Ui.searchTags = it } }
         item { IShelf("Channels", null, r.channels.take(60), { it.id }) { ChannelCard(it, r.channels, nav) } }
         if (r.programmes.isNotEmpty()) item { T("On TV", Modifier.padding(start = D.gutter, top = 10.dp, bottom = 6.dp), size = 20.sp, weight = FontWeight.SemiBold) }
-        items(r.programmes, key = { it.first.id + it.second.start }) { (ch, p) ->
+        items(r.programmes, key = { it.first.id + it.second.start }, contentType = { "programme" }) { (ch, p) ->
             val airing = p.start <= System.currentTimeMillis()
             Box(Modifier.padding(horizontal = D.gutter)) {
                 ListRow(p.title, listOfNotNull(ch.name, p.category).joinToString(" · "), height = 58.dp,

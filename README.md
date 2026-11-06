@@ -33,14 +33,16 @@ Same as the Tizen app, plus what the Shield adds:
 - **Startup intro** (3.6 s, once per launch): in the dark the light in the corner of the L ignites, the Lumen chime plays, then the camera zooms straight into the middle of the L and Home opens behind it. Any remote button skips it; Settings → Startup turns the intro or just the chime off. The chime (`res/raw/lumen_chime.ogg`) is an original synthesized sound.
 - **Sign-in**: 4-character code at plex.tv/link, or scan a QR code with your phone.
 - **Home**: full-screen top shelf (artwork, title logo, ratings, summary, Play/Resume, More Info; moves on every 9 s; ◀ ▶ past the buttons flips titles), Continue Watching, Recently Added for each library. The background cross-fades to the focused title.
-- **Libraries**: poster grid sorted by **release date** by default; Sort (release date, date added, title, rating, recently watched), Unwatched, Genre, Collections.
+- **Libraries**: poster grid sorted by **release date** by default; Sort (release date, date added, title, rating, recently watched), Unwatched, Genre, Collections. Sorted by title, an **A–Z** pill jumps to a letter.
 - **Show page**: Play/Resume next episode, Mark watched, season pills, episodes, Cast & Crew, More Like This.
 - **Details**: logo, badges (8K/4K, HDR10+, Dolby Vision, Dolby Atmos, DTS:X, Lossless, CC/SDH), ratings, one line saying exactly what Play will do (bitstream or PCM and why), Resume, Start Over, Trailer, Audio & Subtitles, Version, Mark Watched, Info (full technical sheet). Rows: Chapters, the rest of the season, Cast & Crew, Extras, More Like This.
 - **Ratings with logos** in this order: IMDb, Letterboxd, Tomatometer, RT Audience, Metacritic, Metascore. The Tomatometer and audience logos change with the score.
 - **Cast & Crew** and a person page with everything in your libraries they're credited on.
 - **TMDB artwork** for missing logos, backdrops and posters.
-- **Search** with the Shield keyboard (and voice through the keyboard's mic).
-- **Settings**: Plex Home users (with PIN), server, audio output (passthrough / decode to PCM), sound check, preferred languages, subtitles (mode, language, size, colour, style, position), frame-rate and resolution matching, Dolby Vision handling, 8K handling, autoplay, auto-skip intro/credits, skip lengths, online service keys.
+- **Search** with Lumen's keyboard or the 🎤 Voice pill (Android's speech recognizer); with nothing typed it shows the last 10 searches.
+- **Card menu**: long-press Select (or Menu) on any Plex card: Play / Resume, Play from Beginning, Mark as Watched / Unwatched, Remove from Continue Watching, Go to Show, Go to Season, More Info.
+- **Play Next**: Continue Watching is published to the Android TV home screen's Play Next row; each entry opens Lumen on that title (`lumen://item/<ratingKey>`).
+- **Settings**: Plex Home users (with PIN), server, audio output (passthrough / decode to PCM), sound check, preferred languages, subtitles (mode, language, size, colour, style, position), frame-rate and resolution matching, Dolby Vision handling, 8K handling, autoplay, auto-skip intro/credits, skip lengths, online service keys, import settings from an address (see below).
 
 ### Player
 | Remote | Action |
@@ -90,6 +92,42 @@ Enter keys in **Settings → Online services**, or in `app/src/main/java/app/ple
 | OpenSubtitles | opensubtitles.com → Profile → API consumers | Subtitle search and download |
 
 Letterboxd and the Metacritic user score have no API; the app reads their public pages, so a layout change there just hides that score.
+
+## Importing settings
+
+Settings → Backup → **Import settings from address** fetches a JSON file over HTTP (default
+`http://192.168.0.151:8765/lumen.json`; any static file server works, e.g. `python3 -m http.server 8765`) and applies it,
+then shows a summary of what was imported. Every key is optional:
+
+```json
+{
+  "tmdbKey": "…",
+  "omdbKey": "…",
+  "openSubtitlesKey": "…",
+  "openSubtitlesUser": "…",
+  "openSubtitlesPassword": "…",
+  "audioLanguage": "eng",
+  "subtitleLanguage": "tur",
+  "subtitleMode": "Forced",
+  "playlists": [
+    { "name": "My IPTV", "kind": "Xtream", "url": "http://provider.example:8080", "username": "user", "password": "pass",
+      "epgUrl": "", "userAgent": "" },
+    { "name": "Free channels", "kind": "M3U", "url": "https://example.com/list.m3u", "epgUrl": "https://example.com/guide.xml" }
+  ],
+  "favorites": [
+    "3f2c…|1234",
+    { "playlist": "My IPTV", "id": "1234" }
+  ]
+}
+```
+
+- Languages are ISO 639-2 codes (`eng`, `tur`, `ger`, …); `""` means Automatic.
+- `subtitleMode`: `Off`, `Forced` (forced only) or `Always`.
+- `playlists[].kind`: `Xtream` or `M3U` (default). A playlist whose `url` and `username` match one already added is
+  skipped. An optional `id` keeps the playlist's id, so favourites exported from another device still match.
+- `favorites` are Live TV ids as Lumen stores them (`<playlistId>|<streamId>` for Xtream channels,
+  `<playlistId>|m|<id>` movies, `<playlistId>|s|<id>` series), or `{ "playlist": "<name, URL or id>", "id": "<rest>" }`
+  to refer to a playlist by name.
 
 ## Install on the Shield
 

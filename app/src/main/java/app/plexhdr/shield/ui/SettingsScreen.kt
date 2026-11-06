@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +46,7 @@ import app.plexhdr.shield.App
 import app.plexhdr.shield.player.Engine
 import app.plexhdr.shield.plex.PlexClient
 import app.plexhdr.shield.services.Settings
+import app.plexhdr.shield.services.SettingsImport
 import kotlinx.coroutines.launch
 
 private sealed interface Row_ {
@@ -177,6 +177,18 @@ fun SettingsScreen(nav: Nav) {
         add(Row_.Item("Artwork from TMDB", onOff(s.tmdbArtwork), null) { s.tmdbArtwork = !s.tmdbArtwork })
         add(Row_.Item("Show ratings", onOff(s.showRatings), "IMDb, Letterboxd, Rotten Tomatoes, Metacritic") { s.showRatings = !s.showRatings })
 
+        add(Row_.Header("Backup"))
+        add(Row_.Item("Import settings from address", "", "Keys, languages, subtitles, Live TV playlists and favourites from a JSON file (see README)") {
+            input = Input("Import settings from address", SettingsImport.lastUrl) { url ->
+                status = "Importing…"
+                scope.launch {
+                    runCatching { SettingsImport.run(url.trim()) }
+                        .onSuccess { lines -> status = null; sheet = listOf("Imported" to "") + lines }
+                        .onFailure { status = "Import failed: ${it.message}" }
+                }
+            }
+        })
+
         add(Row_.Header("Remote"))
         add(Row_.Item("Player keys", "", null) {
             sheet = listOf(
@@ -193,7 +205,7 @@ fun SettingsScreen(nav: Nav) {
     }
 
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+    FocusOnShow(first)
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().padding(top = 90.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 160.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {

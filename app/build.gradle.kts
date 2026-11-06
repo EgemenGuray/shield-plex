@@ -59,11 +59,15 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("androidx.core:core-ktx:1.16.0")
+    // The Android TV home screen's "Play Next" row (Watch Next).
+    implementation("androidx.tvprovider:tvprovider:1.1.0")
 
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-ui:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-datasource-okhttp:$media3")
+    // MediaSession: Google Assistant, the Google TV remote app and HDMI-CEC media keys.
+    implementation("androidx.media3:media3-session:$media3")
     // FFmpeg audio decoders (TrueHD, DTS, DTS-HD MA, AC3, E-AC3...) for when a format can't be bitstreamed.
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:$media3+1")
 

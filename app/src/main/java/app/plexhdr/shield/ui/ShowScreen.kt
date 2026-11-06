@@ -36,25 +36,34 @@ import kotlinx.coroutines.launch
 fun ShowScreen(nav: Nav, initial: PlexItem) {
     val plex = App.plex
     val scope = rememberCoroutineScope()
-    var show by remember { mutableStateOf<PlexItem?>(null) }
-    var seasons by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
-    var seasonIndex by remember { mutableIntStateOf(0) }
-    var episodes by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
-    var similar by remember { mutableStateOf<List<PlexItem>>(emptyList()) }
+    // Retained: back from an episode, the page is there at once (same season) and refreshes quietly.
+    var show by retain("show") { mutableStateOf<PlexItem?>(null) }
+    var seasons by retain("seasons") { mutableStateOf<List<PlexItem>>(emptyList()) }
+    var seasonIndex by retain("seasonIndex") { mutableIntStateOf(0) }
+    var episodes by retain("episodes") { mutableStateOf<List<PlexItem>>(emptyList()) }
+    var similar by retain("similar") { mutableStateOf<List<PlexItem>>(emptyList()) }
     var refresh by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(initial.id, refresh) {
         // A season opens its show, on that season.
         val showKey = if (initial.type == "season") initial.parentRatingKey else initial.ratingKey
-        val s = showKey?.let { runCatching { plex.metadata(it) }.getOrNull() } ?: initial
+        val first = show == null
+        val s = showKey?.let { runCatching { plex.metadata(it) }.getOrNull() } ?: show ?: initial
         show = s
-        seasons = s.ratingKey?.let { runCatching { plex.children(it) }.getOrDefault(emptyList()) } ?: emptyList()
+        seasons = s.ratingKey?.let { runCatching { plex.children(it) }.getOrElse { seasons } } ?: emptyList()
+        if (!first) { similar = s.ratingKey?.let { plex.similar(it) } ?: emptyList(); return@LaunchedEffect }
         if (initial.type == "season") seasonIndex = seasons.indexOfFirst { it.ratingKey == initial.ratingKey }.coerceAtLeast(0)
         else s.onDeck?.parentRatingKey?.let { k -> seasonIndex = seasons.indexOfFirst { it.ratingKey == k }.coerceAtLeast(0) }
         similar = s.ratingKey?.let { plex.similar(it) } ?: emptyList()
     }
+    // The card menu marked something (un)watched: reload the show and its episodes.
+    val seenChanges = remember { CardMenu.changes }
+    LaunchedEffect(CardMenu.changes) { if (CardMenu.changes != seenChanges) refresh++ }
     LaunchedEffect(seasons, seasonIndex) {
-        episodes = seasons.getOrNull(seasonIndex)?.ratingKey?.let { runCatching { plex.children(it) }.getOrDefault(emptyList()) } ?: emptyList()
+        val key = seasons.getOrNull(seasonIndex)?.ratingKey
+        // On the season already shown (coming back), keep its episodes if the refresh fails.
+        val keep = if (episodes.firstOrNull()?.parentRatingKey == key) episodes else emptyList()
+        episodes = key?.let { runCatching { plex.children(it) }.getOrDefault(keep) } ?: emptyList()
     }
 
     val s = show ?: run { Loading(); return }
@@ -62,7 +71,7 @@ fun ShowScreen(nav: Nav, initial: PlexItem) {
     val ratings by rememberRatings(s)
     val next = s.onDeck ?: episodes.firstOrNull { !it.isWatched } ?: episodes.firstOrNull()
     val play = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { play.requestFocus() } }
+    FocusOnShow(play)
 
     Box(Modifier.fillMaxSize()) {
         Backdrop(backdropUrl(s, art))
@@ -103,7 +112,7 @@ fun ShowScreen(nav: Nav, initial: PlexItem) {
             item {
                 Shelf(null, episodes, { it.id }) { ep ->
                     WideCard("${ep.index ?: ""}. ${ep.title}", listOfNotNull(formatRuntime(ep.durationMs), ep.summary).joinToString(" · "),
-                        plexImage(ep.thumb, 600, 338), ep.progress, { nav.push(Screen.Detail(ep)) })
+                        plexImage(ep.thumb, 600, 338), ep.progress, { nav.push(Screen.Detail(ep)) }, item = ep)
                 }
             }
             val people = castAndCrew(s)
