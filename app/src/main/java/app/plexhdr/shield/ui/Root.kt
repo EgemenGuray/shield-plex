@@ -231,9 +231,14 @@ private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean, liv
         // focusProperties.enter runs only when focus comes in from outside the bar, so moving between the tabs
         // and the Plex | Live TV switch isn't pulled back (an onFocusChanged redirect fired mid-move and did that).
         val current = remember { FocusRequester() }
+        // With no tab selected (e.g. a Plex library that isn't in the bar) no tab holds [current]; fall back to the default.
+        val hasCurrent = tabs.any { it.selected }
         Row(
             Modifier.weight(1f)
-                .focusProperties { enter = { current } }
+                .focusProperties {
+                    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class) @Suppress("DEPRECATION")
+                    enter = { if (hasCurrent) current else FocusRequester.Default }
+                }
                 .focusGroup(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
