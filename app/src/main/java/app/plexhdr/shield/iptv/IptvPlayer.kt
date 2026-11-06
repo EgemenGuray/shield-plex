@@ -355,6 +355,9 @@ fun IptvPlayerScreen(request: IptvPlay, onClose: () -> Unit) {
         Modifier.fillMaxSize().background(Color.Black).focusRequester(root)
             .onPreviewKeyEvent { e ->
                 if (pc.panel != null || e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // Back goes to the BackHandler untouched: the catch-all below used to show the overlay on its key-down,
+                // so the BackHandler always found the overlay up, only hid it, and Back could never leave a channel.
+                if (e.key == Key.Back || e.key == Key.Escape) return@onPreviewKeyEvent false
                 val d = digitOf(e.key)
                 if (d != null) { pc.digit(d); return@onPreviewKeyEvent true }
                 if (pc.error != null && (e.key == Key.DirectionCenter || e.key == Key.Enter)) { pc.retry(); return@onPreviewKeyEvent true }
