@@ -22,6 +22,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
+import kotlinx.coroutines.launch
+import app.plexhdr.shield.iptv.Text
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -130,11 +135,7 @@ private object Ui {
 }
 
 /** True when the section isn't being searched, or any of the values contains its search text. */
-private fun hits(sec: Section, vararg values: String?): Boolean {
-    val q = Ui.sq[sec]?.trim()?.lowercase().orEmpty()
-    if (q.isEmpty()) return true
-    return values.any { it != null && it.lowercase().contains(q) }
-}
+private fun hits(sec: Section, vararg values: String?): Boolean = Text.matches(Text.words(Ui.sq[sec].orEmpty()), *values)
 private fun searching(sec: Section) = !Ui.sq[sec].isNullOrBlank()
 
 /** The search field at the top of a section. It looks through the whole section, not just the open group. */
@@ -186,7 +187,8 @@ private fun debounced(value: String, ms: Long = 250): String {
 @Composable
 private fun sectionQuery(sec: Section): String = debounced(Ui.sq[sec]?.trim().orEmpty())
 
-private fun has(q: String, vararg values: String?) = q.isEmpty() || values.any { it != null && it.contains(q, ignoreCase = true) }
+/** Search match: every word of [q] in one of the values, ignoring case, accents and Turkish letters (see [Text.fold]). */
+private fun has(q: String, vararg values: String?) = Text.matches(Text.words(q), *values)
 
 data class IptvInput(val title: String, val value: String, val number: Boolean = false, val secret: Boolean = false, val done: (String) -> Unit)
 
@@ -365,9 +367,20 @@ private fun channelOptions(nav: Nav, ch: Channel) {
 
 private fun groupRows(g: IptvGroup): List<SheetRow> {
     val s = App.iptv
-    val rows = arrayListOf(SheetRow("Hide Group") { s.setHidden(g, true) })
+    val rows = ArrayList<SheetRow>()
+    // Favourite groups are listed first, in their own order. Hide sits last, away from a quick second press of Select.
+    if (s.isPinned(g)) {
+        rows += SheetRow("Remove from Favorite Groups") { s.setPinned(g, false) }
+        rows += SheetRow("Move Up") { s.movePinned(g, -1) }
+        rows += SheetRow("Move Down") { s.movePinned(g, 1) }
+        rows += SheetRow("Move to Top") { s.movePinnedToTop(g) }
+    } else {
+        rows += SheetRow("Add to Favorite Groups", "Listed first") { s.setPinned(g, true) }
+        rows += SheetRow("Move to Top", "Adds it to Favorite Groups, first") { s.movePinnedToTop(g) }
+    }
     rows += if (s.pin.isNotEmpty()) SheetRow(if (s.isLocked(g)) "Unlock Group" else "Lock Group with PIN") { s.setLocked(g, !s.isLocked(g)) }
     else SheetRow("Lock Group with PIN", "Set a PIN in Playlists first")
+    rows += SheetRow("Hide Group", "Show it again from Sources → Hidden Groups") { s.setHidden(g, true) }
     return rows
 }
 
@@ -447,9 +460,10 @@ private fun TagRow(selected: Set<QTag>, onChange: (Set<QTag>) -> Unit) {
 
 @Composable
 private fun ListRow(text: String, sub: String? = null, on: Boolean = false, height: Dp = 54.dp, leading: (@Composable () -> Unit)? = null,
-                    trailing: (@Composable () -> Unit)? = null, onFocus: () -> Unit = {}, onOptions: (() -> Unit)? = null, onClick: () -> Unit) {
+                    trailing: (@Composable () -> Unit)? = null, onFocus: () -> Unit = {}, onOptions: (() -> Unit)? = null,
+                    focusRequester: FocusRequester? = null, onClick: () -> Unit) {
     Focusable(onClick, Modifier.fillMaxWidth().then(if (onOptions != null) Modifier.onMenu(onOptions) else Modifier), RoundedCornerShape(10.dp), 1.02f,
-        onFocused = onFocus, onLongClick = onOptions, showBorder = false) { f ->
+        focusRequester = focusRequester, onFocused = onFocus, onLongClick = onOptions, showBorder = false) { f ->
         Row(Modifier.fillMaxWidth().height(height).background(if (f) C.focus else if (on) Color(0x22FFFFFF) else Color.Transparent).padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically) {
             leading?.invoke()
@@ -478,20 +492,106 @@ private fun LiveSection(nav: Nav) {
     val list = computed.orEmpty()
     // Focus lives in its own state, read only by the preview pane: moving through the list doesn't recompose the list.
     val focused = remember { mutableStateOf<Channel?>(null) }
+    // Groups: favourites first, then A–Z. A search also narrows the groups to those whose name matches.
+    val allGroups = remember(s.channels, s.pinnedGroups, s.hidden) { s.orderedGroups(IptvGroup.Kind.Live) }
+    val groups = remember(allGroups, q) { if (q.isEmpty()) allGroups else Text.words(q).let { w -> allGroups.filter { Text.matches(w, it.name) } } }
+    val fixed = if (q.isEmpty()) listOf("all" to "All Channels", "favorites" to "Favorites", "recents" to "Recently Watched") else emptyList()
+    val groupList = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var az by remember { mutableStateOf(false) }
+    var azAt by remember { mutableStateOf(0) }
+    // The letter of the group that had focus when Left was pressed (null on the fixed rows and favourites).
+    var focusedLetter by remember { mutableStateOf<String?>(null) }
+    var jumpIndex by remember { mutableStateOf(-1) }
+    val jumpFocus = remember { FocusRequester() }
+    val azFocus = remember { FocusRequester() }
+    val pinnedCount = groups.count { s.isPinned(it) }
+    // The letters that start a group after the favourites ("#" for digits and symbols).
+    val letters = remember(groups, pinnedCount) {
+        groups.drop(pinnedCount).map { azLetter(it.name) }.distinct()
+    }
+    fun focusRow(index: Int) {
+        jumpIndex = index
+        scope.launch {
+            groupList.scrollToItem((index - 2).coerceAtLeast(0))
+            repeat(20) { if (runCatching { jumpFocus.requestFocus() }.isSuccess) return@launch; delay(32) }
+        }
+    }
+    fun closeAz(letter: String?) {
+        az = false
+        val i = if (letter == null) -1 else groups.indices.firstOrNull { it >= pinnedCount && azLetter(groups[it].name) == letter } ?: -1
+        val row = if (i >= 0) fixed.size + i
+            else (groups.indexOfFirst { it.id == Ui.liveGroup }.takeIf { it >= 0 }?.let { fixed.size + it } ?: fixed.indexOfFirst { it.first == Ui.liveGroup }.coerceAtLeast(0))
+        focusRow(row)
+    }
+    BackHandler(enabled = az) { closeAz(null) }
+    // Favouriting or moving a group moves its row: keep focus on it instead of losing it to the top bar.
+    var focusedGroupId by remember { mutableStateOf<String?>(null) }
+    var seenPins by remember { mutableStateOf(s.pinnedGroups) }
+    LaunchedEffect(groups) {
+        if (s.pinnedGroups == seenPins) return@LaunchedEffect
+        seenPins = s.pinnedGroups
+        val i = groups.indexOfFirst { it.id == focusedGroupId }
+        if (i >= 0) { delay(150); focusRow(fixed.size + i) }
+    }
+    LaunchedEffect(az) { if (az) repeat(20) { if (runCatching { azFocus.requestFocus() }.isSuccess) return@LaunchedEffect; delay(32) } }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = D.gutter), verticalAlignment = Alignment.CenterVertically) {
-            SectionSearch(Section.Live, "channels and what's on")
+            SectionSearch(Section.Live, "groups, channels and what's on")
             Box(Modifier.weight(1f)) { TagRow(Ui.tagFilter) { Ui.tagFilter = it } }
         }
         Row(Modifier.fillMaxSize().padding(start = D.gutter, end = D.gutter, top = 8.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            LazyColumn(Modifier.width(250.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF)).padding(6.dp)) {
-                items(listOf("all" to "All Channels", "favorites" to "Favorites", "recents" to "Recently Watched"), key = { it.first }) { (id, label) ->
-                    ListRow(label, on = Ui.liveGroup == id, height = 44.dp) { Ui.liveGroup = id }
+            if (az) {
+                // A–Z: Left in the group list opens it; Select jumps to the first group with that letter, Back or Right closes it.
+                val current = focusedLetter ?: groups.drop(pinnedCount).firstOrNull { it.id == Ui.liveGroup }?.let { azLetter(it.name) }
+                LazyColumn(
+                    Modifier.width(64.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x22FFFFFF)).padding(4.dp)
+                        .onPreviewKeyEvent { e ->
+                            if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (e.key) {
+                                Key.DirectionRight -> { closeAz(null); true }
+                                // Focus stays in the strip while it is open.
+                                Key.DirectionLeft -> true
+                                Key.DirectionUp -> azAt <= 0
+                                Key.DirectionDown -> azAt >= letters.lastIndex
+                                else -> false
+                            }
+                        },
+                    state = rememberLazyListState(((letters.indexOf(current)).coerceAtLeast(0) - 3).coerceAtLeast(0)),
+                ) {
+                    itemsIndexed(letters, key = { _, l -> l }) { i, l ->
+                        Focusable({ closeAz(l) }, Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), 1.06f, onFocused = { azAt = i },
+                            focusRequester = if (l == (current ?: letters.firstOrNull())) azFocus else null, showBorder = false) { f ->
+                            Box(Modifier.fillMaxWidth().height(40.dp).background(if (f) C.focus else Color.Transparent), contentAlignment = Alignment.Center) {
+                                T(l, size = 18.sp, weight = FontWeight.Bold, color = if (f) Color.Black else C.text)
+                            }
+                        }
+                    }
                 }
-                items(s.groups(IptvGroup.Kind.Live), key = { it.id }, contentType = { "group" }) { g ->
-                    ListRow(g.name + if (s.isLocked(g)) (if (s.unlocked) "  🔓" else "  🔒") else "", on = Ui.liveGroup == g.id, height = 44.dp,
-                        leading = { SourceDot(g.playlistId) }, onOptions = { Ui.sheet = Sheet(g.name, groupRows(g)) }) {
-                        withPin(g) { Ui.liveGroup = g.id }
+            }
+            LazyColumn(
+                Modifier.width(250.dp).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF)).padding(6.dp)
+                    .onPreviewKeyEvent { e ->
+                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionLeft && !az && letters.isNotEmpty()) { az = true; true } else false
+                    },
+                state = groupList,
+            ) {
+                items(fixed, key = { it.first }) { (id, label) ->
+                    val i = fixed.indexOfFirst { it.first == id }
+                    ListRow(label, on = Ui.liveGroup == id, height = 44.dp, onFocus = { focusedLetter = null },
+                        focusRequester = if (i == jumpIndex) jumpFocus else null) { Ui.liveGroup = id }
+                }
+                if (q.isNotEmpty()) item(key = "groupsHeader") {
+                    T(if (groups.isEmpty()) "No group matches." else if (groups.size == 1) "1 group matches" else "${groups.size} groups match", Modifier.padding(10.dp), size = 13.sp, color = C.dim)
+                }
+                itemsIndexed(groups, key = { _, g -> g.id }, contentType = { _, _ -> "group" }) { i, g ->
+                    val pinned = i < pinnedCount
+                    ListRow((if (pinned) "★ " else "") + g.name + if (s.isLocked(g)) (if (s.unlocked) "  🔓" else "  🔒") else "", on = Ui.liveGroup == g.id, height = 44.dp,
+                        leading = { SourceDot(g.playlistId) }, onOptions = { Ui.sheet = Sheet(g.name, groupRows(g)) },
+                        onFocus = { focusedLetter = if (pinned) null else azLetter(g.name); focusedGroupId = g.id },
+                        focusRequester = if (fixed.size + i == jumpIndex) jumpFocus else null) {
+                        // Picking a group ends a search, so its channels show.
+                        withPin(g) { Ui.liveGroup = g.id; if (q.isNotEmpty()) Ui.sq[Section.Live] = "" }
                     }
                 }
             }
@@ -507,6 +607,12 @@ private fun LiveSection(nav: Nav) {
             LivePreview(focused, Modifier.width(420.dp))
         }
     }
+}
+
+/** The A–Z letter a group files under: its first letter or digit, folded ("Türkiye" under T); "#" for digits. */
+private fun azLetter(name: String): String {
+    val c = Text.fold(name).firstOrNull() ?: return "#"
+    return if (c.isLetter()) c.uppercase() else "#"
 }
 
 @Composable

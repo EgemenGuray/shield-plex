@@ -71,7 +71,7 @@ private class Library(
 /** The preferences, read together off the main thread at start. */
 private class Saved(
     val favorites: Set<String>, val recents: List<String>, val hidden: Set<String>, val locked: Set<String>,
-    val renames: Map<String, String>, val pin: String, val positions: Map<String, Pair<Long, Long>>, val measured: Map<String, Measured>,
+    val renames: Map<String, String>, val pinnedGroups: List<String>, val pin: String, val positions: Map<String, Pair<Long, Long>>, val measured: Map<String, Measured>,
     val resume: List<ResumeEntry>, val plays: Map<String, List<Long>>, val reminders: List<Reminder>,
 )
 
@@ -111,6 +111,8 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     var hidden by mutableStateOf<Set<String>>(emptySet()); private set
     var locked by mutableStateOf<Set<String>>(emptySet()); private set
     var renames by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    /** Favourite groups, in the order they are listed first (moved with Move Up / Down / to Top). */
+    var pinnedGroups by mutableStateOf<List<String>>(emptyList()); private set
     var pin by mutableStateOf(""); private set
     var unlocked by mutableStateOf(false); private set
     var positions by mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap()); private set
@@ -456,6 +458,28 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     fun unlock(p: String): Boolean { if (p != pin) return false; unlocked = true; rebuild(); return true }
     fun lock() { unlocked = false; rebuild() }
 
+    fun isPinned(g: IptvGroup) = g.id in pinnedGroups
+    fun setPinned(g: IptvGroup, on: Boolean) = savePinned(if (on) pinnedGroups.filter { it != g.id } + g.id else pinnedGroups - g.id)
+    /** Moves a favourite group [by] places in the favourites (an ordinary group becomes a favourite at the top). */
+    fun movePinned(g: IptvGroup, by: Int) {
+        val l = pinnedGroups.toMutableList()
+        val i = l.indexOf(g.id)
+        if (i < 0) { l.add(0, g.id); savePinned(l); return }
+        val j = (i + by).coerceIn(0, l.lastIndex)
+        l.removeAt(i); l.add(j, g.id); savePinned(l)
+    }
+    fun movePinnedToTop(g: IptvGroup) = savePinned(listOf(g.id) + pinnedGroups.filter { it != g.id })
+    private fun savePinned(l: List<String>) { pinnedGroups = l; writeList("pinnedGroups", l) }
+
+    /** Visible groups of [kind]: favourites first in their order, then the rest A–Z (accents and Turkish letters folded). */
+    fun orderedGroups(kind: IptvGroup.Kind): List<IptvGroup> {
+        val all = groups(kind)
+        val byId = all.associateBy { it.id }
+        val pinned = pinnedGroups.mapNotNull { byId[it] }
+        val pinnedIds = pinned.mapTo(HashSet()) { it.id }
+        return pinned + all.filter { it.id !in pinnedIds }.sortedWith(compareBy({ Text.fold(it.name) }, { it.name }))
+    }
+
     fun isFavorite(id: String) = id in favorites
     fun toggleFavorite(id: String) { favorites = if (id in favorites) favorites - id else favorites + id; writeSet("favorites", favorites) }
     fun favoriteChannels() = favorites.mapNotNull { lib.channelById[it] }
@@ -628,7 +652,8 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     fun search(query: String, wantTags: Set<QTag>, scope: SearchScope): SearchResult {
         val q = query.trim()
         if (q.length < 2 && wantTags.isEmpty()) return SearchResult()
-        fun match(s: String?) = q.isEmpty() || (s != null && s.contains(q, ignoreCase = true))
+        val ws = Text.words(q)
+        fun match(s: String?) = ws.isEmpty() || (s != null && Text.matches(ws, s))
         val l = lib
         val pool = if (wantTags.isEmpty()) l.channels else l.channels.filter { c -> tags(c).containsAll(wantTags) }
         val chans = if (scope != SearchScope.Programmes) pool.asSequence().filter { match(it.name) }.take(200).toList() else emptyList()
@@ -652,12 +677,12 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     // ---------------- persistence ----------------
 
     private fun readSaved() = Saved(
-        readSet("favorites"), readList("recents"), readSet("hidden"), readSet("locked"), readMap("renames"), prefs.getString("pin", "") ?: "",
+        readSet("favorites"), readList("recents"), readSet("hidden"), readSet("locked"), readMap("renames"), readList("pinnedGroups"), prefs.getString("pin", "") ?: "",
         readPositions(), readMeasured(), readResume(), readPlays(), readReminders(),
     )
 
     private fun applySaved(v: Saved) {
-        favorites = v.favorites; recents = v.recents; hidden = v.hidden; locked = v.locked; renames = v.renames; pin = v.pin
+        favorites = v.favorites; recents = v.recents; hidden = v.hidden; locked = v.locked; renames = v.renames; pinnedGroups = v.pinnedGroups; pin = v.pin
         positions = v.positions; measured = v.measured; resume = v.resume; plays = v.plays; reminders = v.reminders
     }
 
