@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import app.plexhdr.shield.services.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -47,6 +48,34 @@ data class SearchResult(
 enum class SearchScope(val label: String) { All("Everything"), Channels("Channel names"), Programmes("TV programmes") }
 
 /**
+ * The visible library and its lookups, built off the main thread whenever sources, hidden or locked groups or renames
+ * change. Everything a screen asks per channel or per group is a map lookup here instead of a pass over 30 000 entries.
+ */
+private class Library(
+    val channels: List<Channel> = emptyList(),
+    val movies: List<Movie> = emptyList(),
+    val series: List<Series> = emptyList(),
+    val channelById: Map<String, Channel> = emptyMap(),
+    val movieById: Map<String, Movie> = emptyMap(),
+    val seriesById: Map<String, Series> = emptyMap(),
+    val channelsByGroup: Map<String, List<Channel>> = emptyMap(),
+    val moviesByGroup: Map<String, List<Movie>> = emptyMap(),
+    val seriesByGroup: Map<String, List<Series>> = emptyMap(),
+    /** Visible (not hidden) groups by kind. */
+    val groups: Map<IptvGroup.Kind, List<IptvGroup>> = emptyMap(),
+    /** The playlist's own name of each renamed channel, for matching it to the guide. */
+    val originalNames: Map<String, String> = emptyMap(),
+    val maxCatchupDays: Int = 1,
+)
+
+/** The preferences, read together off the main thread at start. */
+private class Saved(
+    val favorites: Set<String>, val recents: List<String>, val hidden: Set<String>, val locked: Set<String>,
+    val renames: Map<String, String>, val pin: String, val positions: Map<String, Pair<Long, Long>>, val measured: Map<String, Measured>,
+    val resume: List<ResumeEntry>, val plays: Map<String, List<Long>>, val reminders: List<Reminder>,
+)
+
+/**
  * Everything Live TV keeps: sources, their channels, movies and series, the TV guide, favourites, hidden and locked
  * groups, renames, Continue Watching and what's been watched. State is Compose state, so screens update by themselves.
  * Downloaded playlists and the guide are cached in the app's files so the library opens instantly.
@@ -69,38 +98,46 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     val loading = mutableStateMapOf<String, Boolean>()
     val errors = mutableStateMapOf<String, String>()
 
+    /** Replaced as a whole on each rebuild (on the main thread), so readers on any thread see one consistent library. */
+    @Volatile private var lib = Library()
     var channels by mutableStateOf<List<Channel>>(emptyList()); private set
     var movies by mutableStateOf<List<Movie>>(emptyList()); private set
     var series by mutableStateOf<List<Series>>(emptyList()); private set
-    private var byId: Map<String, Channel> = emptyMap()
     var ready by mutableStateOf(false); private set
 
-    var favorites by mutableStateOf(readSet("favorites")); private set
-    var recents by mutableStateOf(readList("recents")); private set
-    var hidden by mutableStateOf(readSet("hidden")); private set
-    var locked by mutableStateOf(readSet("locked")); private set
-    var renames by mutableStateOf(readMap("renames")); private set
-    var pin by mutableStateOf(prefs.getString("pin", "") ?: ""); private set
+    // Read in start(), off the main thread.
+    var favorites by mutableStateOf<Set<String>>(emptySet()); private set
+    var recents by mutableStateOf<List<String>>(emptyList()); private set
+    var hidden by mutableStateOf<Set<String>>(emptySet()); private set
+    var locked by mutableStateOf<Set<String>>(emptySet()); private set
+    var renames by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    var pin by mutableStateOf(""); private set
     var unlocked by mutableStateOf(false); private set
-    var positions by mutableStateOf(readPositions()); private set
-    var measured by mutableStateOf(readMeasured()); private set
-    var resume by mutableStateOf(readResume()); private set
-    private var plays: Map<String, List<Long>> = readPlays()
-    var reminders by mutableStateOf(readReminders()); private set
+    var positions by mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap()); private set
+    var measured by mutableStateOf<Map<String, Measured>>(emptyMap()); private set
+    var resume by mutableStateOf<List<ResumeEntry>>(emptyList()); private set
+    private var plays: Map<String, List<Long>> = emptyMap()
+    var reminders by mutableStateOf<List<Reminder>>(emptyList()); private set
     var dueReminder by mutableStateOf<Reminder?>(null)
 
     private val detailCache = HashMap<String, Details>()
     private val tagCache = HashMap<String, List<QTag>>()
-    private val keyCache = HashMap<String, String?>()
+    /** Guide key per channel id; [NO_KEY] marks a channel with no guide, so it isn't looked up again. */
+    private val keyCache = HashMap<String, String>()
+    private val logoCache = HashMap<String, String>()
 
     fun start() {
         scope.launch {
-            withContext(Dispatchers.IO) {
+            val saved = withContext(Dispatchers.IO) {
+                val sv = readSaved()
                 playlists.forEach { p -> runCatching { readCache(p) }.getOrNull()?.let { synchronized(contents) { contents[p.id] = it } } }
                 val g = File(dir, "guide.tsv")
-                if (g.exists()) runCatching { Guide.fromTsv(g.readText(), prefs.getLong("guideUpdated", 0)) }.getOrNull()?.let { guide = it }
+                val gd = if (g.exists()) runCatching { g.bufferedReader().use { Guide.fromTsv(it.lineSequence(), prefs.getLong("guideUpdated", 0)) } }.getOrNull() else null
+                sv to gd
             }
-            rebuild()
+            applySaved(saved.first)
+            saved.second?.let { guide = it }
+            rebuild().join()
             ready = true
             refreshStale()
         }
@@ -156,22 +193,35 @@ class IptvStore(private val context: Context, private val settings: Settings) {
         loading[id] = true
         errors.remove(id)
         try {
+            // Answers are streamed to files and parsed from there, so a 50 000-film list never sits in memory as one string.
             val c = withContext(Dispatchers.IO) {
                 if (pl.kind == Playlist.Kind.Xtream) {
                     val x = Xtream(pl)
                     val account = get(x.api(), pl.userAgent)
-                    val acts = listOf("get_live_categories", "get_live_streams", "get_vod_categories", "get_vod_streams", "get_series_categories", "get_series")
-                    val r = kotlinx.coroutines.coroutineScope { acts.map { a -> async { runCatching { get(x.api(a), pl.userAgent) }.getOrNull() } }.awaitAll() }
-                    val parsed = x.parse(account, r[0], r[1], r[2], r[3], r[4], r[5])
-                    val cache = JSONObject().put("kind", "xtream").put("account", account)
-                    acts.forEachIndexed { i, a -> cache.put(a, r[i] ?: "") }
-                    File(dir, "$id.cache").writeText(cache.toString())
+                    val ok = kotlinx.coroutines.coroutineScope {
+                        XT_ACTIONS.map { a -> async { runCatching { download(x.api(a), pl.userAgent, File(dir, "$id.$a.tmp")) }.isSuccess } }.awaitAll()
+                    }
+                    fun part(i: Int) = if (ok[i]) jsonItems(File(dir, "$id.${XT_ACTIONS[i]}.tmp")) else null
+                    val parsed = x.parse(account, part(0), part(1), part(2), part(3), part(4), part(5))
+                    XT_ACTIONS.forEachIndexed { i, a ->
+                        val f = File(dir, "$id.$a.json")
+                        if (ok[i]) { f.delete(); File(dir, "$id.$a.tmp").renameTo(f) } else { f.delete(); File(dir, "$id.$a.tmp").delete() }
+                    }
+                    File(dir, "$id.cache").writeText("$XT_MARK\n$account")
                     parsed
                 } else {
-                    val text = get(pl.url.trim(), pl.userAgent)
-                    if (!text.contains("#EXTINF") && !text.contains("#EXTM3U")) throw IptvException("This address didn't return an M3U playlist.")
-                    File(dir, "$id.cache").writeText("M3U\n$text")
-                    M3U.parse(text, pl)
+                    val tmp = File(dir, "$id.cache.tmp")
+                    try {
+                        tmp.outputStream().buffered().use { out ->
+                            out.write("M3U\n".toByteArray())
+                            open(pl.url.trim(), pl.userAgent) { Text.unzip(it).copyTo(out, 1 shl 16) }
+                        }
+                        if (!Text.lines(tmp, 1) { M3U.looksLikeM3U(it) }) throw IptvException("This address didn't return an M3U playlist.")
+                        val parsed = Text.lines(tmp, 1) { M3U.parse(it, pl) }
+                        val f = File(dir, "$id.cache")
+                        f.delete(); tmp.renameTo(f)
+                        parsed
+                    } finally { tmp.delete() }
                 }
             }
             synchronized(contents) { contents[id] = c }
@@ -189,22 +239,42 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     private fun readCache(p: Playlist): Content? {
         val f = File(dir, "${p.id}.cache")
         if (!f.exists()) return null
-        val text = f.readText()
-        if (text.startsWith("M3U\n")) return M3U.parse(text.substring(4), p)
-        val o = JSONObject(text)
+        val first = f.bufferedReader().use { it.readLine() } ?: return null
+        if (first == "M3U") return Text.lines(f, 1) { M3U.parse(it, p) }
+        if (first == XT_MARK) {
+            val account = f.readText().substringAfter('\n')
+            fun part(a: String) = jsonItems(File(dir, "${p.id}.$a.json"))
+            return Xtream(p).parse(account, part(XT_ACTIONS[0]), part(XT_ACTIONS[1]), part(XT_ACTIONS[2]), part(XT_ACTIONS[3]), part(XT_ACTIONS[4]), part(XT_ACTIONS[5]))
+        }
+        // The older single-JSON cache; replaced by the next refresh.
+        val o = JSONObject(f.readText())
         fun s(k: String) = o.optString(k).ifEmpty { null }
         return Xtream(p).parse(o.optString("account"), s("get_live_categories"), s("get_live_streams"), s("get_vod_categories"),
             s("get_vod_streams"), s("get_series_categories"), s("get_series"))
     }
 
+    private fun request(url: String, userAgent: String?): Request =
+        Request.Builder().url(url).header("User-Agent", userAgent?.ifEmpty { null } ?: "Lumen/1.0 (Android TV)").build()
+
     /** GET as text (gzip guides unpacked). */
     fun get(url: String, userAgent: String? = null): String {
-        val b = Request.Builder().url(url)
-        b.header("User-Agent", userAgent?.ifEmpty { null } ?: "Lumen/1.0 (Android TV)")
-        http.newCall(b.build()).execute().use { r ->
+        http.newCall(request(url, userAgent)).execute().use { r ->
             if (!r.isSuccessful) throw IptvException("The server answered ${r.code}.")
             return Text.decodeBody(r.body?.bytes() ?: ByteArray(0))
         }
+    }
+
+    /** GET and hand the body to [block] as a stream. */
+    fun <T> open(url: String, userAgent: String?, block: (java.io.InputStream) -> T): T {
+        http.newCall(request(url, userAgent)).execute().use { r ->
+            if (!r.isSuccessful) throw IptvException("The server answered ${r.code}.")
+            return block(r.body?.byteStream() ?: java.io.ByteArrayInputStream(ByteArray(0)))
+        }
+    }
+
+    /** GET straight into a file (gzip unpacked). */
+    private fun download(url: String, userAgent: String?, to: File) {
+        open(url, userAgent) { input -> to.outputStream().buffered().use { Text.unzip(input).copyTo(it, 1 shl 16) } }
     }
 
     // ---------------- guide ----------------
@@ -218,49 +288,57 @@ class IptvStore(private val context: Context, private val settings: Settings) {
         }
         if (urls.isEmpty()) return@launch
         guideLoading = true
-        val all = synchronized(contents) { contents.values.flatMap { it.channels } }
-        val ids = all.mapNotNull { it.epgId?.lowercase() }.toSet()
-        val names = all.map { Text.key(it.name) }.toSet()
-        val maxDays = (all.mapNotNull { it.catchup?.days }.maxOrNull() ?: 1).coerceIn(1, 14)
-        val from = System.currentTimeMillis() - maxDays * 86_400_000L
-        val to = System.currentTimeMillis() + 4 * 86_400_000L
+        var failed: String? = null
         val merged = withContext(Dispatchers.IO) {
+            val all = synchronized(contents) { contents.values.toList() }.flatMap { it.channels }
+            val ids = all.mapNotNullTo(HashSet()) { it.epgId?.lowercase() }
+            val names = all.mapTo(HashSet()) { Text.key(it.name) }
+            val maxDays = (all.maxOfOrNull { it.catchup?.days ?: 1 } ?: 1).coerceIn(1, 14)
+            val from = System.currentTimeMillis() - maxDays * 86_400_000L
+            val to = System.currentTimeMillis() + 4 * 86_400_000L
             val progs = HashMap<String, List<Programme>>()
             val nm = HashMap<String, String>()
             val icons = HashMap<String, String>()
-            var failed: String? = null
             urls.forEach { (u, ua) ->
                 runCatching {
-                    val g = XMLTV.parse(get(u, ua), ids, names, from, to)
+                    // Parsed as it downloads: the guide is never held as one (often 100+ MB) string.
+                    val g = open(u, ua) { XMLTV.parse(Text.reader(it), ids, names, from, to) }
                     g.programmes.forEach { (k, v) -> progs.putIfAbsent(k, v) }
                     g.names.forEach { (k, v) -> nm.putIfAbsent(k, v) }
                     g.icons.forEach { (k, v) -> icons.putIfAbsent(k, v) }
                 }.onFailure { failed = it.message }
             }
-            if (progs.isEmpty()) { failed?.let { errors["guide"] = "Guide: $it" }; null }
+            if (progs.isEmpty()) null
             else Guide(progs, nm, System.currentTimeMillis(), icons).also {
-                errors.remove("guide")
-                runCatching { File(dir, "guide.tsv").writeText(it.toTsv()) }
+                runCatching {
+                    val tmp = File(dir, "guide.tsv.tmp")
+                    tmp.bufferedWriter().use { w -> it.writeTsv(w) }
+                    File(dir, "guide.tsv").delete(); tmp.renameTo(File(dir, "guide.tsv"))
+                }
             }
         }
         if (merged != null) {
+            errors.remove("guide")
+            synchronized(keyCache) { keyCache.clear(); logoCache.clear() }
             guide = merged
-            synchronized(keyCache) { keyCache.clear() }
             prefs.edit().putLong("guideUpdated", merged.updated).apply()
-        }
+        } else failed?.let { errors["guide"] = "Guide: $it" }
         guideLoading = false
     }
 
-    private fun epgKey(ch: Channel): String? = synchronized(keyCache) {
-        keyCache.getOrPut(ch.id) {
-            val g = guide
-            val id = ch.epgId?.lowercase()
-            when {
-                id != null && g.programmes.containsKey(id) -> id
-                g.names[Text.key(ch.name)]?.let { g.programmes.containsKey(it) } == true -> g.names[Text.key(ch.name)]
-                else -> content(ch.playlistId)?.channels?.firstOrNull { it.id == ch.id }?.let { g.names[Text.key(it.name)] }
-            }
+    /** The channel's guide id, cached (also when there is none: a miss used to be looked up again on every call). */
+    private fun epgKey(ch: Channel): String? {
+        val g = guide
+        synchronized(keyCache) { keyCache[ch.id] }?.let { return if (it === NO_KEY) null else it }
+        val id = ch.epgId?.lowercase()
+        val byName = g.names[Text.key(ch.name)]
+        val k = when {
+            id != null && g.programmes.containsKey(id) -> id
+            byName != null && g.programmes.containsKey(byName) -> byName
+            else -> lib.originalNames[ch.id]?.let { g.names[Text.key(it)] } ?: byName
         }
+        synchronized(keyCache) { if (guide === g) keyCache[ch.id] = k ?: NO_KEY }
+        return k
     }
 
     /** The playlist's logo, else the TV guide's icon for the channel. */
@@ -268,23 +346,19 @@ class IptvStore(private val context: Context, private val settings: Settings) {
         ch.logo?.let { return it }
         val g = guide
         if (g.icons.isEmpty()) return null
-        ch.epgId?.lowercase()?.let { id -> g.icons[id]?.let { return it } }
-        return g.names[Text.key(ch.name)]?.let { g.icons[it] }
+        synchronized(keyCache) { logoCache[ch.id] }?.let { return if (it === NO_KEY) null else it }
+        val l = ch.epgId?.lowercase()?.let { g.icons[it] } ?: g.names[Text.key(ch.name)]?.let { g.icons[it] }
+        synchronized(keyCache) { if (guide === g) logoCache[ch.id] = l ?: NO_KEY }
+        return l
     }
 
     fun programmes(ch: Channel, from: Long? = null, to: Long? = null): List<Programme> {
         val list = epgKey(ch)?.let { guide.programmes[it] } ?: return emptyList()
         if (from == null || to == null) return list
-        return list.filter { it.end > from && it.start < to }
+        return Guide.window(list, from, to)
     }
 
-    fun nowNext(ch: Channel, at: Long = System.currentTimeMillis()): Pair<Programme?, Programme?> {
-        val list = programmes(ch)
-        for (i in list.indices) {
-            if (list[i].end > at) return if (list[i].start <= at) list[i] to list.getOrNull(i + 1) else null to list[i]
-        }
-        return null to null
-    }
+    fun nowNext(ch: Channel, at: Long = System.currentTimeMillis()): Pair<Programme?, Programme?> = Guide.nowNext(programmes(ch), at)
 
     fun catchupUrl(ch: Channel, p: Programme): String? = CatchupUrl.url(ch, p, playlist(ch.playlistId), content(ch.playlistId)?.serverTimeZone)
     fun canCatchUp(ch: Channel, p: Programme) = CatchupUrl.available(ch, p)
@@ -293,43 +367,87 @@ class IptvStore(private val context: Context, private val settings: Settings) {
 
     private fun groupKey(pid: String, kind: IptvGroup.Kind, name: String) = "$pid|${kind.name}|$name"
 
-    private fun rebuild() {
+    private var rebuildJob: Job? = null
+
+    /**
+     * Rebuilds the visible library on a background thread and publishes it on the main thread. A newer call cancels an
+     * older one still running, so a burst of hide/lock/rename taps costs one rebuild.
+     */
+    private fun rebuild(): Job {
+        rebuildJob?.cancel()
+        val pls = playlists; val hid = hidden; val lck = locked; val ren = renames; val unl = unlocked
+        val cs = synchronized(contents) { HashMap(contents) }
+        return scope.launch {
+            val l = withContext(Dispatchers.Default) { buildLibrary(pls, cs, hid, lck, ren, unl) }
+            synchronized(tagCache) { tagCache.clear() }
+            synchronized(keyCache) { keyCache.clear(); logoCache.clear() }
+            lib = l
+            channels = l.channels; movies = l.movies; series = l.series
+        }.also { rebuildJob = it }
+    }
+
+    private fun buildLibrary(pls: List<Playlist>, cs: Map<String, Content>, hid: Set<String>, lck: Set<String>, ren: Map<String, String>, unl: Boolean): Library {
         val ch = ArrayList<Channel>(); val mv = ArrayList<Movie>(); val se = ArrayList<Series>()
-        val ids = HashMap<String, Channel>()
-        for (p in playlists) {
-            val c = content(p.id) ?: continue
+        val chById = HashMap<String, Channel>(); val mvById = HashMap<String, Movie>(); val seById = HashMap<String, Series>()
+        val chBy = HashMap<String, ArrayList<Channel>>(); val mvBy = HashMap<String, ArrayList<Movie>>(); val seBy = HashMap<String, ArrayList<Series>>()
+        val groups = HashMap<IptvGroup.Kind, ArrayList<IptvGroup>>()
+        val orig = HashMap<String, String>()
+        var maxDays = 1
+        for (p in pls) {
+            val c = cs[p.id] ?: continue
             if (!p.enabled) continue
-            fun ok(kind: IptvGroup.Kind, g: String): Boolean {
+            // The decision per group, not per entry: one string build per group instead of one per film.
+            val okCache = HashMap<String, Boolean>()
+            fun ok(kind: IptvGroup.Kind, g: String): Boolean = okCache.getOrPut(kind.name + g) {
                 val k = groupKey(p.id, kind, g)
-                return k !in hidden && (unlocked || k !in locked)
+                k !in hid && (unl || k !in lck)
+            }
+            for ((kind, names) in listOf(IptvGroup.Kind.Live to c.liveGroups, IptvGroup.Kind.Movie to c.movieGroups, IptvGroup.Kind.Series to c.seriesGroups)) {
+                val out = groups.getOrPut(kind) { ArrayList() }
+                names.forEach { n -> val k = groupKey(p.id, kind, n); if (k !in hid) out += IptvGroup(k, p.id, kind, n) }
             }
             c.channels.forEach { x ->
                 if (!ok(IptvGroup.Kind.Live, x.group)) return@forEach
                 var y = x
-                renames[x.id]?.let { y = y.copy(name = it) }
+                ren[x.id]?.let { orig[x.id] = x.name; y = y.copy(name = it) }
                 if (y.userAgent == null && p.userAgent.isNotEmpty()) y = y.copy(userAgent = p.userAgent)
-                ch += y; ids[y.id] = y
+                ch += y; chById[y.id] = y
+                chBy.getOrPut(groupKey(p.id, IptvGroup.Kind.Live, y.group)) { ArrayList() } += y
+                y.catchup?.days?.let { if (it > maxDays) maxDays = it }
             }
-            c.movies.forEach { if (ok(IptvGroup.Kind.Movie, it.group)) mv += it }
-            c.series.forEach { if (ok(IptvGroup.Kind.Series, it.group)) se += it }
+            c.movies.forEach {
+                if (!ok(IptvGroup.Kind.Movie, it.group)) return@forEach
+                mv += it; mvById[it.id] = it
+                mvBy.getOrPut(groupKey(p.id, IptvGroup.Kind.Movie, it.group)) { ArrayList() } += it
+            }
+            c.series.forEach {
+                if (!ok(IptvGroup.Kind.Series, it.group)) return@forEach
+                se += it; seById[it.id] = it
+                seBy.getOrPut(groupKey(p.id, IptvGroup.Kind.Series, it.group)) { ArrayList() } += it
+            }
         }
-        synchronized(tagCache) { tagCache.clear() }
-        synchronized(keyCache) { keyCache.clear() }
-        byId = ids
-        channels = ch; movies = mv; series = se
+        return Library(ch, mv, se, chById, mvById, seById, chBy, mvBy, seBy, groups, orig, maxDays)
     }
 
-    fun channel(id: String): Channel? = byId[id]
+    fun channel(id: String): Channel? = lib.channelById[id]
 
-    fun groups(kind: IptvGroup.Kind, includeHidden: Boolean = false): List<IptvGroup> = playlists.filter { it.enabled }.flatMap { p ->
-        val c = content(p.id) ?: return@flatMap emptyList()
-        val names = when (kind) { IptvGroup.Kind.Live -> c.liveGroups; IptvGroup.Kind.Movie -> c.movieGroups; IptvGroup.Kind.Series -> c.seriesGroups }
-        names.map { IptvGroup(groupKey(p.id, kind, it), p.id, kind, it) }.filter { includeHidden || it.id !in hidden }
+    fun groups(kind: IptvGroup.Kind, includeHidden: Boolean = false): List<IptvGroup> {
+        if (!includeHidden) return lib.groups[kind].orEmpty()
+        return playlists.filter { it.enabled }.flatMap { p ->
+            val c = content(p.id) ?: return@flatMap emptyList()
+            val names = when (kind) { IptvGroup.Kind.Live -> c.liveGroups; IptvGroup.Kind.Movie -> c.movieGroups; IptvGroup.Kind.Series -> c.seriesGroups }
+            names.map { IptvGroup(groupKey(p.id, kind, it), p.id, kind, it) }
+        }
     }
 
-    fun channelsIn(g: IptvGroup) = channels.filter { it.playlistId == g.playlistId && it.group == g.name }
-    fun moviesIn(g: IptvGroup) = movies.filter { it.playlistId == g.playlistId && it.group == g.name }
-    fun seriesIn(g: IptvGroup) = series.filter { it.playlistId == g.playlistId && it.group == g.name }
+    fun group(kind: IptvGroup.Kind, id: String): IptvGroup? = lib.groups[kind]?.firstOrNull { it.id == id }
+
+    fun channelsIn(g: IptvGroup): List<Channel> = lib.channelsByGroup[g.id].orEmpty()
+    fun moviesIn(g: IptvGroup): List<Movie> = lib.moviesByGroup[g.id].orEmpty()
+    fun seriesIn(g: IptvGroup): List<Series> = lib.seriesByGroup[g.id].orEmpty()
+
+    /** The longest catch-up any visible channel offers, in days (at least 1). */
+    val maxCatchupDays: Int get() = lib.maxCatchupDays
 
     fun isLocked(g: IptvGroup) = g.id in locked
     fun setHidden(g: IptvGroup, on: Boolean) { hidden = if (on) hidden + g.id else hidden - g.id; writeSet("hidden", hidden); rebuild() }
@@ -340,10 +458,10 @@ class IptvStore(private val context: Context, private val settings: Settings) {
 
     fun isFavorite(id: String) = id in favorites
     fun toggleFavorite(id: String) { favorites = if (id in favorites) favorites - id else favorites + id; writeSet("favorites", favorites) }
-    fun favoriteChannels() = favorites.mapNotNull { byId[it] }
-    fun favoriteMovies() = movies.filter { it.id in favorites }
-    fun favoriteSeries() = series.filter { it.id in favorites }
-    fun recentChannels() = recents.mapNotNull { byId[it] }
+    fun favoriteChannels() = favorites.mapNotNull { lib.channelById[it] }
+    fun favoriteMovies() = favorites.mapNotNull { lib.movieById[it] }
+    fun favoriteSeries() = favorites.mapNotNull { lib.seriesById[it] }
+    fun recentChannels() = recents.mapNotNull { lib.channelById[it] }
     fun clearRecents() { recents = emptyList(); writeList("recents", recents) }
 
     fun rename(ch: Channel, name: String?) {
@@ -380,15 +498,27 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     /** Your most-watched channels of the last seven days. */
     fun trendingChannels(): List<Channel> {
         val since = System.currentTimeMillis() - 7 * 86_400_000L
-        return plays.mapValues { (_, v) -> v.count { it > since } }.filter { it.value > 0 && byId.containsKey(it.key) }
-            .entries.sortedByDescending { it.value }.take(20).mapNotNull { byId[it.key] }
+        val ids = lib.channelById
+        return plays.mapValues { (_, v) -> v.count { it > since } }.filter { it.value > 0 && ids.containsKey(it.key) }
+            .entries.sortedByDescending { it.value }.take(20).mapNotNull { ids[it.key] }
     }
 
     data class Trending(val movies: List<Movie>, val series: List<Series>, val fromTmdb: Boolean)
 
-    /** TMDB's trending lists matched to your sources; without a TMDB key, the best-rated new additions. */
-    suspend fun trending(): Trending = withContext(Dispatchers.IO) {
+    private var trendingCache: Triple<Any, String, Trending>? = null
+
+    /**
+     * TMDB's trending lists matched to your sources; without a TMDB key, the best-rated new additions. Remembered for the
+     * library it was made from, so opening Home again doesn't fetch and match 50 000 titles again.
+     */
+    suspend fun trending(): Trending {
+        val l = lib
         val key = settings.tmdbKey.trim()
+        trendingCache?.let { (k, t, v) -> if (k === l && t == key) return v }
+        return computeTrending(l.movies, l.series, key).also { trendingCache = Triple(l, key, it) }
+    }
+
+    private suspend fun computeTrending(movies: List<Movie>, series: List<Series>, key: String): Trending = withContext(Dispatchers.IO) {
         fun fetch(media: String): List<Pair<String, Int?>> {
             if (key.isEmpty()) return emptyList()
             return runCatching {
@@ -447,13 +577,12 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     }
 
     fun continueEntries(): List<ResumeEntry> {
-        val m = movies.associateBy { it.id }
-        val s = series.associateBy { it.id }
-        return resume.filter { r -> if (r.movieId != null) m.containsKey(r.movieId) && positions.containsKey(r.id) else s.containsKey(r.seriesId) }
+        val l = lib
+        return resume.filter { r -> if (r.movieId != null) l.movieById.containsKey(r.movieId) && positions.containsKey(r.id) else l.seriesById.containsKey(r.seriesId) }
     }
 
-    fun movie(id: String?) = movies.firstOrNull { it.id == id }
-    fun seriesById(id: String?) = series.firstOrNull { it.id == id }
+    fun movie(id: String?) = id?.let { lib.movieById[it] }
+    fun seriesById(id: String?) = id?.let { lib.seriesById[it] }
 
     suspend fun details(movie: Movie): Details {
         detailCache[movie.id]?.let { return it }
@@ -495,15 +624,17 @@ class IptvStore(private val context: Context, private val settings: Settings) {
 
     // ---------------- search ----------------
 
+    /** Searches everything; call it off the main thread (it can walk 100 000 titles and the whole guide). */
     fun search(query: String, wantTags: Set<QTag>, scope: SearchScope): SearchResult {
-        val q = query.trim().lowercase()
+        val q = query.trim()
         if (q.length < 2 && wantTags.isEmpty()) return SearchResult()
-        fun match(s: String?) = q.isEmpty() || (s != null && s.lowercase().contains(q))
-        val pool = if (wantTags.isEmpty()) channels else channels.filter { c -> tags(c).containsAll(wantTags) }
-        val chans = if (scope != SearchScope.Programmes) pool.filter { match(it.name) }.take(200) else emptyList()
+        fun match(s: String?) = q.isEmpty() || (s != null && s.contains(q, ignoreCase = true))
+        val l = lib
+        val pool = if (wantTags.isEmpty()) l.channels else l.channels.filter { c -> tags(c).containsAll(wantTags) }
+        val chans = if (scope != SearchScope.Programmes) pool.asSequence().filter { match(it.name) }.take(200).toList() else emptyList()
         if (q.isEmpty() || scope == SearchScope.Channels) return SearchResult(channels = chans)
-        val mv = if (scope == SearchScope.All) movies.filter { match(it.name) }.take(80) else emptyList()
-        val se = if (scope == SearchScope.All) series.filter { match(it.name) }.take(80) else emptyList()
+        val mv = if (scope == SearchScope.All) l.movies.asSequence().filter { match(it.name) }.take(80).toList() else emptyList()
+        val se = if (scope == SearchScope.All) l.series.asSequence().filter { match(it.name) }.take(80).toList() else emptyList()
         val now = System.currentTimeMillis()
         val seen = HashSet<String>()
         val out = ArrayList<Pair<Channel, Programme>>()
@@ -519,6 +650,23 @@ class IptvStore(private val context: Context, private val settings: Settings) {
     }
 
     // ---------------- persistence ----------------
+
+    private fun readSaved() = Saved(
+        readSet("favorites"), readList("recents"), readSet("hidden"), readSet("locked"), readMap("renames"), prefs.getString("pin", "") ?: "",
+        readPositions(), readMeasured(), readResume(), readPlays(), readReminders(),
+    )
+
+    private fun applySaved(v: Saved) {
+        favorites = v.favorites; recents = v.recents; hidden = v.hidden; locked = v.locked; renames = v.renames; pin = v.pin
+        positions = v.positions; measured = v.measured; resume = v.resume; plays = v.plays; reminders = v.reminders
+    }
+
+    private companion object {
+        const val XT_MARK = "XTREAM2"
+        val XT_ACTIONS = listOf("get_live_categories", "get_live_streams", "get_vod_categories", "get_vod_streams", "get_series_categories", "get_series")
+        /** Cache marker for "looked up, nothing found" (compared by identity). */
+        val NO_KEY = String(charArrayOf('-'))
+    }
 
     private fun readPlaylists(): List<Playlist> {
         val a = runCatching { JSONArray(prefs.getString("playlists", "[]")) }.getOrDefault(JSONArray())
