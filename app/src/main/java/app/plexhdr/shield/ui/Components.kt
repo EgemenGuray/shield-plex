@@ -42,6 +42,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -151,11 +156,23 @@ fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, color: Color = C
     }
 }
 
-/** Poster card (2:3). */
+/** Long-press Select or the Menu key opens a card's options. */
+fun Modifier.onOptionsKey(action: (() -> Unit)?): Modifier = if (action == null) this else onPreviewKeyEvent { e ->
+    if (e.key == Key.Menu) { if (e.type == KeyEventType.KeyDown) action(); true } else false
+}
+
+/**
+ * Poster card (2:3). Long-press or Menu opens [onOptions]; by default the Plex card menu (see [CardMenu]).
+ * Pass null for no menu.
+ */
 @Composable
-fun PosterCard(item: PlexItem, onClick: () -> Unit, onFocused: () -> Unit = {}, modifier: Modifier = Modifier, focusRequester: FocusRequester? = null) {
+fun PosterCard(
+    item: PlexItem, onClick: () -> Unit, onFocused: () -> Unit = {}, modifier: Modifier = Modifier, focusRequester: FocusRequester? = null,
+    onOptions: (() -> Unit)? = { CardMenu.show(item) },
+) {
     Column(modifier.width(D.posterW)) {
-        Focusable(onClick, Modifier.size(D.posterW, D.posterH), focusRequester = focusRequester, onFocused = onFocused) {
+        Focusable(onClick, Modifier.size(D.posterW, D.posterH).onOptionsKey(onOptions), focusRequester = focusRequester, onFocused = onFocused,
+            onLongClick = onOptions) {
             Img(plexImage(item.posterPath, 300, 450), Modifier.fillMaxSize())
             if (item.isWatched) Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(14.dp).clip(RoundedCornerShape(50)).background(C.accent))
             item.progress?.let { ProgressBar(it, Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp)) }
@@ -165,14 +182,19 @@ fun PosterCard(item: PlexItem, onClick: () -> Unit, onFocused: () -> Unit = {}, 
     }
 }
 
-/** Wide card (16:9) for Continue Watching, episodes, extras and chapters. */
+/**
+ * Wide card (16:9) for Continue Watching, episodes, extras and chapters. With a Plex [item], long-press or Menu opens
+ * the Plex card menu unless [onOptions] says otherwise.
+ */
 @Composable
 fun WideCard(
     title: String, subtitle: String?, image: String?, progress: Float?, onClick: () -> Unit,
     onFocused: () -> Unit = {}, modifier: Modifier = Modifier, width: Dp = D.wideW, focusRequester: FocusRequester? = null,
+    item: PlexItem? = null, onOptions: (() -> Unit)? = item?.let { i -> { CardMenu.show(i) } },
 ) {
     Column(modifier.width(width)) {
-        Focusable(onClick, Modifier.width(width).height(width * 9 / 16), focusRequester = focusRequester, onFocused = onFocused) {
+        Focusable(onClick, Modifier.width(width).height(width * 9 / 16).onOptionsKey(onOptions), focusRequester = focusRequester,
+            onFocused = onFocused, onLongClick = onOptions) {
             Img(image, Modifier.fillMaxSize())
             if (progress != null) ProgressBar(progress, Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(10.dp))
         }
@@ -205,14 +227,20 @@ fun <E> Shelf(
     }
 }
 
+/** [continueWatching]: the cards' menu also offers "Remove from Continue Watching". */
 @Composable
-fun ItemShelf(title: String, items: List<PlexItem>, open: (PlexItem) -> Unit, wide: Boolean = false, onFocused: (PlexItem) -> Unit = {}) {
+fun ItemShelf(
+    title: String, items: List<PlexItem>, open: (PlexItem) -> Unit, wide: Boolean = false, continueWatching: Boolean = false,
+    onFocused: (PlexItem) -> Unit = {},
+) {
     Shelf(title, items, { it.id }) { item ->
+        val options = { CardMenu.show(item, continueWatching) }
         if (wide) {
             val sub = item.episodeLabel?.let { "$it · ${item.title}" } ?: item.year?.toString()
-            WideCard(item.displayTitle, sub, plexImage(item.backdropPath, 600, 338), item.progress, { open(item) }, { onFocused(item) })
+            WideCard(item.displayTitle, sub, plexImage(item.backdropPath, 600, 338), item.progress, { open(item) }, { onFocused(item) },
+                item = item, onOptions = options)
         } else {
-            PosterCard(item, { open(item) }, { onFocused(item) })
+            PosterCard(item, { open(item) }, { onFocused(item) }, onOptions = options)
         }
     }
 }

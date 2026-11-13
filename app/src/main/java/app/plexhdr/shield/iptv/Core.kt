@@ -142,6 +142,38 @@ enum class QTag(val label: String) {
 }
 
 object Text {
+    private val foldCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * Text reduced for searching: lower case, accents and Turkish letters folded (İ I ı → i, ş → s, ğ → g, ç → c, ö → o,
+     * ü → u), superscript and small-capital tags ("ᴿᴬᵂ", "⁴ᴷ") made plain, punctuation turned into single spaces.
+     */
+    fun fold(s: String): String {
+        if (s.isEmpty()) return s
+        foldCache[s]?.let { return it }
+        val n = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKD)
+        val sb = StringBuilder(n.length)
+        var space = true
+        for (c in n) {
+            if (Character.getType(c) == Character.NON_SPACING_MARK.toInt()) continue
+            val l = when (c) { 'İ', 'I', 'ı' -> 'i'; else -> c.lowercaseChar() }
+            if (l.isLetterOrDigit()) { sb.append(l); space = false } else if (!space) { sb.append(' '); space = true }
+        }
+        val out = sb.toString().trimEnd()
+        if (foldCache.size < 400_000) foldCache[s] = out
+        return out
+    }
+
+    /** The words of a search, folded. */
+    fun words(query: String): List<String> = fold(query).split(' ').filter { it.isNotEmpty() }
+
+    /** True when every word of the search appears (as part of a word) in one of the values, or the search is empty. */
+    fun matches(words: List<String>, vararg values: String?): Boolean {
+        if (words.isEmpty()) return true
+        val f = values.mapNotNull { it?.let(::fold) }
+        return words.all { w -> f.any { it.contains(w) } }
+    }
+
     /** Short label for a channel without a logo: "Kanal 2 HD" gives K2, "TRT 1" gives TRT 1, "Discovery Science" gives DS. */
     private val prefixRe = Regex("^\\s*[A-Z]{2,4}\\s*[:|\\-]\\s*")
     private val qualityRe = Regex("\\b(4K|UHD|FHD|HD|SD|HEVC|H265|50FPS|60FPS|RAW|BACKUP)\\b", RegexOption.IGNORE_CASE)

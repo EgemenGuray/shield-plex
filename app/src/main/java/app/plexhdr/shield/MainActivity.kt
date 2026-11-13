@@ -5,7 +5,9 @@ import android.view.Display
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import app.plexhdr.shield.services.WatchNext
 import app.plexhdr.shield.ui.AppRoot
+import app.plexhdr.shield.ui.DeepLink
 import app.plexhdr.shield.ui.Intro
 import app.plexhdr.shield.ui.TvScale
 import kotlin.math.abs
@@ -15,6 +17,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { TvScale { AppRoot() } }
+        // lumen://item/<ratingKey> from the home screen's Play Next row, on a cold start or while running.
+        DeepLink.handle(intent)
+        addOnNewIntentListener { DeepLink.handle(it) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        WatchNext.syncSoon(3000)
     }
 
     /** While the startup intro plays, any button skips it and goes no further. */
@@ -29,6 +39,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         App.memory.flush()
+        WatchNext.syncSoon()
     }
 
     /**

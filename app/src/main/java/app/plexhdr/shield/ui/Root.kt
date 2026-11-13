@@ -31,6 +31,8 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -195,6 +197,7 @@ private fun Main(iptvOnly: Boolean = false) {
                     .clip(RoundedCornerShape(50)).background(Color(0xE62C2C34)).padding(horizontal = 26.dp, vertical = 12.dp),
             ) { T("Press Back again to exit", size = 16.sp, weight = FontWeight.SemiBold) }
         }
+        GlobalHosts(nav)   // card menu, lumen:// deep links, Play Next updates (ui/GlobalHosts.kt)
     }
 }
 
@@ -225,10 +228,18 @@ private fun TabBar(nav: Nav, sections: List<PlexSection>, iptvOnly: Boolean, liv
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Coming up into the bar lands on the current tab, not on whichever tab or switch was focused last.
+        // focusProperties.enter runs only when focus comes in from outside the bar, so moving between the tabs
+        // and the Plex | Live TV switch isn't pulled back (an onFocusChanged redirect fired mid-move and did that).
         val current = remember { FocusRequester() }
-        var inBar by remember { mutableStateOf(false) }
+        // With no tab selected (e.g. a Plex library that isn't in the bar) no tab holds [current]; fall back to the default.
+        val hasCurrent = tabs.any { it.selected }
         Row(
-            Modifier.weight(1f).onFocusChanged { if (it.hasFocus && !inBar) runCatching { current.requestFocus() }; inBar = it.hasFocus },
+            Modifier.weight(1f)
+                .focusProperties {
+                    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class) @Suppress("DEPRECATION")
+                    enter = { if (hasCurrent) current else FocusRequester.Default }
+                }
+                .focusGroup(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Segmented(listOf("Plex", "Live TV"), if (liveTv) 1 else 0, { setMode(it == 1) })
