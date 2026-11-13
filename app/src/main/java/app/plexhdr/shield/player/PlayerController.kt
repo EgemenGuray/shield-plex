@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
@@ -18,6 +19,7 @@ import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaSession
 import app.plexhdr.shield.App
 import app.plexhdr.shield.MainActivity
 import app.plexhdr.shield.plex.Decide
@@ -49,7 +51,7 @@ class PlayerController(
     private val subtitleId: Int?,
     private val onClose: () -> Unit,
 ) {
-    enum class Panel(val title: String) { Info("Info"), Chapters("Chapters"), Audio("Audio"), Subtitles("Subtitles"), Version("Version"), Picture("Picture") }
+    enum class Panel(val title: String) { AudioSubs("Audio & Subtitles"), Chapters("Chapters"), Picture("Picture"), Info("Info") }
     enum class Fit(val label: String) { Fit("Original"), Zoom("Zoom to fill"), Stretch("Stretch") }
 
     private val settings: Settings = App.settings
@@ -74,6 +76,11 @@ class PlayerController(
     var upNext by mutableStateOf<PlexItem?>(null); private set
     var upNextCountdown by mutableStateOf(10); private set
     var error by mutableStateOf<String?>(null); private set
+    /** The technical side of [error] (error code and message), shown in small text. */
+    var errorDetail by mutableStateOf<String?>(null); private set
+    /** ◀ ▶ presses waiting to become one seek: where it will land and the total jump. */
+    var skipTargetMs by mutableStateOf<Long?>(null); private set
+    var skipDeltaMs by mutableStateOf(0L); private set
     var subtitleDelayMs by mutableStateOf(0L); private set
     var speed by mutableStateOf(1f); private set
     var fit by mutableStateOf(Fit.Fit)
@@ -101,6 +108,10 @@ class PlayerController(
     private var show: PlexItem? = null
     private var scrubStep = 10_000L
     private var lastScrubMove = 0L
+    private var skipJob: Job? = null
+    private var errorPosMs = 0L
+    /** Lets Google Assistant, the Google TV remote app and HDMI-CEC media keys control playback. */
+    private var session: MediaSession? = null
 
     private fun initialPlan(item: PlexItem, mediaIndex: Int?, audioId: Int?, subtitleId: Int?): Decide.Plan {
         val mem = memory.record(item)
@@ -205,6 +216,7 @@ class PlayerController(
 
     private fun openNow(startMs: Long) {
         error = null
+        errorDetail = null
         appliedTracks = false
         embeddedCues = emptyList()
         val p = plan
@@ -222,17 +234,34 @@ class PlayerController(
             transcodeOffsetMs = 0
             url = part?.let { plex.directPlayUrl(it) }
         }
-        if (url == null) { error = "This item has no playable file."; return }
+        if (url == null) { error = "This item has no playable file."; errorPosMs = startMs; return }
         val old = player
         old?.removeListener(listener)
         old?.release()
         val exo = buildPlayer()
         player = exo
-        exo.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(item.id).build(), playerStart)
+        val meta = MediaMetadata.Builder()
+            .setTitle(item.title)
+            .setDisplayTitle(item.title)
+            .setArtist(if (item.type == "episode") listOfNotNull(item.grandparentTitle, item.episodeLabel).joinToString(" · ") else item.year?.toString())
+            .build()
+        exo.setMediaItem(MediaItem.Builder().setUri(url).setMediaId(item.id).setMediaMetadata(meta).build(), playerStart)
+        attachSession(exo)
         exo.playbackParameters = exo.playbackParameters.withSpeed(speed)
         exo.prepare()
         exo.playWhenReady = true
         loadExternalSubtitle()
+    }
+
+    /** One session for the whole playback; each new ExoPlayer (reopen, version change, Up Next) is swapped in. */
+    private fun attachSession(exo: ExoPlayer) {
+        val s = session
+        if (s == null) {
+            session = runCatching { MediaSession.Builder(activity, exo).setId("lumen-plex-" + System.nanoTime()).build() }
+                .onFailure { android.util.Log.w("Lumen", "MediaSession failed", it) }.getOrNull()
+        } else if (s.player !== exo) {
+            s.setPlayer(exo)
+        }
     }
 
     private var matchedFps = 0f
@@ -273,7 +302,46 @@ class PlayerController(
             open(pos)
             return
         }
-        error = "${e.errorCodeName}: ${e.cause?.message ?: e.message ?: "playback failed"}"
+        errorPosMs = pos
+        error = when (e.errorCode) {
+            in 2000..2999 -> "Lost the connection to the server, or it couldn't send the file."
+            in 3000..3999 -> "The file couldn't be read. It may be damaged or in a format the Shield doesn't support."
+            in 4000..4999 -> "The Shield couldn't decode this file."
+            in 5000..5999 -> if (plan.bitstream) "The audio couldn't be sent to the soundbar." else "The audio output failed."
+            else -> "Playback stopped with an error."
+        }
+        errorDetail = "${e.errorCodeName} (${e.errorCode}): ${e.cause?.message ?: e.message ?: "playback failed"}"
+    }
+
+    // ---- Error screen actions
+
+    /** True when the audio is being bitstreamed and decoding it on the Shield is still worth a try. */
+    val canDecodeAudio get() = !pcmFallback && plan.bitstream
+    val hasOtherVersion get() = item.media.size > 1
+
+    private fun clearError() {
+        retried = false
+        error = null
+        errorDetail = null
+    }
+
+    fun retryPlayback() {
+        clearError()
+        open(errorPosMs)
+    }
+
+    fun retryWithDecodedAudio() {
+        clearError()
+        pcmFallback = true
+        plan = plan.copy(bitstream = false, note = "The audio is decoded on the Shield for this title. " + plan.note)
+        open(errorPosMs)
+    }
+
+    fun tryOtherVersion() {
+        val n = item.media.size
+        if (n < 2) return
+        clearError()
+        chooseVersion((plan.mediaIndex + 1) % n, errorPosMs)
     }
 
     private fun finished() {
@@ -453,17 +521,18 @@ class PlayerController(
         }
     }
 
-    fun adjustSubtitleDelay(deltaMs: Long) { subtitleDelayMs += deltaMs }
+    fun adjustSubtitleDelay(deltaMs: Long) { subtitleDelayMs = ((subtitleDelayMs + deltaMs) / 100) * 100 }
+    fun resetSubtitleDelay() { subtitleDelayMs = 0 }
 
     fun setPlaybackSpeed(s: Float) {
         speed = s
         player?.let { it.playbackParameters = it.playbackParameters.withSpeed(s) }
     }
 
-    fun chooseVersion(index: Int) {
+    fun chooseVersion(index: Int, atMs: Long = currentPosition()) {
         memory.update(item) { it.mediaIndex = index }
         plan = Decide.plan(item, index, null, null, settings, caps)
-        open(currentPosition())
+        open(atMs)
     }
 
     // ---- Transport
@@ -485,9 +554,34 @@ class PlayerController(
         player?.seekTo(target)
     }
 
+    /**
+     * ◀ ▶ while playing. Presses are added up for 600 ms and then sought once: three presses used to mean three seeks,
+     * three rebuffers and a passthrough audio restart each time.
+     */
     fun skip(deltaMs: Long) {
-        seekTo(currentPosition() + deltaMs)
+        val base = skipTargetMs ?: currentPosition()
+        val max = if (durationMs > 0) (durationMs - 1000).coerceAtLeast(0) else Long.MAX_VALUE
+        skipTargetMs = (base + deltaMs).coerceIn(0, max)
+        skipDeltaMs += deltaMs
         showOverlay(autoHide = true)
+        skipJob?.cancel()
+        skipJob = scope.launch {
+            delay(600)
+            val target = skipTargetMs
+            clearSkip()
+            target?.let { seekTo(it) }
+        }
+    }
+
+    private fun clearSkip() {
+        skipJob = null
+        skipTargetMs = null
+        skipDeltaMs = 0
+    }
+
+    private fun cancelPendingSkip() {
+        skipJob?.cancel()
+        clearSkip()
     }
 
     /** While paused (or already scrubbing), ◀ ▶ move a scrub head with preview thumbnails; holding speeds up. */
@@ -495,7 +589,8 @@ class PlayerController(
         val now = System.currentTimeMillis()
         scrubStep = if (now - lastScrubMove < 350) (scrubStep * 3 / 2).coerceAtMost(300_000) else 10_000
         lastScrubMove = now
-        val from = scrubMs ?: currentPosition()
+        val from = scrubMs ?: skipTargetMs ?: currentPosition()
+        cancelPendingSkip()
         scrubMs = (from + direction * scrubStep).coerceIn(0, durationMs)
         showOverlay(autoHide = false)
     }
@@ -518,6 +613,7 @@ class PlayerController(
 
     fun jumpChapter(d: Int) {
         val ch = chapters
+        if (ch.isNotEmpty()) cancelPendingSkip()
         if (ch.isEmpty()) { skip(d * 60_000L); return }
         val t = currentPosition()
         if (d > 0) ch.firstOrNull { it.startMs > t + 1000 }?.let { seekTo(it.startMs) }
@@ -595,6 +691,7 @@ class PlayerController(
     /** Switches to another title (Up Next), keeping the subtitle language. */
     fun playItem(next: PlexItem) {
         countdownJob?.cancel()
+        cancelPendingSkip()
         saveProgress()
         val subLang = plan.subtitle?.languageCode
         scope.launch {
@@ -647,6 +744,9 @@ class PlayerController(
 
     fun release() {
         countdownJob?.cancel()
+        skipJob?.cancel()
+        session?.release()
+        session = null
         transcodeSession?.let { s -> CoroutineScope(Dispatchers.IO).launch { plex.stopTranscode(s) } }
         player?.removeListener(listener)
         player?.release()
